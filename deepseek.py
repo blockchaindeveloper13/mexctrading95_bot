@@ -21,11 +21,8 @@ class DeepSeekClient:
     def clean_json_response(self, response):
         """DeepSeek yanıtından markdown ve ek metinleri temizler, sadece JSON kısmını döndürür."""
         try:
-            # Markdown ```json ve ``` etiketlerini kaldır
             cleaned = re.sub(r'^```json\s*|\s*```$', '', response, flags=re.MULTILINE)
-            # JSON sonrası ek metinleri kaldır (örneğin, ### Key Rationale)
             cleaned = re.sub(r'\n\s*###.*|\n\s*\*.*', '', cleaned, flags=re.MULTILINE)
-            # Gereksiz boşlukları temizle
             cleaned = cleaned.strip()
             return cleaned
         except Exception as e:
@@ -65,6 +62,11 @@ class DeepSeekClient:
                 f"4h Stochastic %K: {indicators.get('stoch_k_4h', 'N/A')}\n"
                 f"4h Stochastic %D: {indicators.get('stoch_d_4h', 'N/A')}\n"
                 f"4h ATR: {indicators.get('atr_4h', 'N/A')}\n"
+                f"Volume Change 1h: {indicators.get('volume_change_1h', 'N/A')}%;\n"
+                f"Volume Change 3h: {indicators.get('volume_change_3h', 'N/A')}%;\n"
+                f"Volume Change 6h: {indicators.get('volume_change_6h', 'N/A')}%;\n"
+                f"Volume Change 24h: {indicators.get('volume_change_24h', 'N/A')}%;\n"
+                f"Bid/Ask Ratio: {indicators.get('bid_ask_ratio', 'N/A')}\n"
                 "Perform a comprehensive short-term trading analysis (1-4 hours) including technical and fundamental factors. For fundamental analysis, include recent news or market sentiment if available (use your deep search capabilities). Provide:\n"
                 "- pump_probability (0-100%)\n"
                 "- dump_probability (0-100%)\n"
