@@ -13,17 +13,82 @@ from dotenv import load_dotenv
 from datetime import datetime
 import re
 
-# Eksik sınıfları ve fonksiyonları içe aktar
-from mexc_client import MEXCClient  # MEXCClient sınıfını içe aktar
-from deepseek_client import DeepSeekClient  # DeepSeekClient sınıfını içe aktar
-from storage import Storage  # Storage sınıfını içe aktar
-from indicators import calculate_indicators  # calculate_indicators fonksiyonunu içe aktar
-
 # Loglama ayarları
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+# Yer tutucu sınıflar ve fonksiyonlar
+class MEXCClient:
+    """MEXC API ile iletişim kurar."""
+    async def fetch_and_save_market_data(self, symbol):
+        # TODO: MEXC API'den veri çekme mantığını buraya ekleyin
+        logger.debug(f"{symbol} için piyasa verisi çekiliyor")
+        # Örnek veri yapısı döndürüyoruz
+        return {
+            'klines': {
+                '1m': [], '5m': [], '15m': [], '30m': [], '60m': []
+            },
+            'order_book': {},
+            'price': 0.0
+        }
+    
+    async def get_top_coins(self, limit):
+        # TODO: MEXC API'den en iyi coin'leri alma mantığını buraya ekleyin
+        logger.debug(f"Top {limit} coin alınıyor")
+        # Örnek coin listesi
+        return ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'][:limit]
+    
+    async def close(self):
+        # TODO: MEXC API bağlantısını kapatma mantığını buraya ekleyin
+        logger.debug("MEXCClient bağlantısı kapatılıyor")
+        pass
+
+class DeepSeekClient:
+    """DeepSeek API ile coin analizi yapar."""
+    def analyze_coin(self, data, trade_type):
+        # TODO: DeepSeek API ile coin analizi mantığını buraya ekleyin
+        logger.debug(f"{trade_type} için coin analizi yapılıyor")
+        # Örnek analiz sonucu
+        return {
+            'short_term': {
+                'entry_price': 0.0,
+                'exit_price': 0.0,
+                'stop_loss': 0.0,
+                'leverage': '1x',
+                'pump_probability': 0,
+                'dump_probability': 0,
+                'fundamental_analysis': 'Veri yok'
+            }
+        }
+
+class Storage:
+    """Analiz sonuçlarını depolar ve yükler."""
+    def save_analysis(self, data):
+        # TODO: Analiz sonuçlarını kaydetme mantığını buraya ekleyin
+        logger.debug("Analiz sonuçları kaydediliyor")
+        pass
+    
+    def load_analysis(self):
+        # TODO: Analiz sonuçlarını yükleme mantığını buraya ekleyin
+        logger.debug("Analiz sonuçları yükleniyor")
+        # Örnek veri yapısı
+        return {}
+
+def calculate_indicators(kline_1m, kline_5m, kline_15m, kline_30m, kline_60m, order_book):
+    """Teknik göstergeleri hesaplar."""
+    # TODO: Teknik göstergeleri hesaplama mantığını buraya ekleyin
+    logger.debug("Teknik göstergeler hesaplanıyor")
+    # Örnek gösterge verileri
+    return {
+        'volume_change_1m': 0.0,
+        'volume_change_5m': 0.0,
+        'volume_change_15m': 0.0,
+        'volume_change_30m': 0.0,
+        'volume_change_60m': 0.0,
+        'bid_ask_ratio': 0.0
+    }
 
 class TelegramBot:
     def __init__(self):
