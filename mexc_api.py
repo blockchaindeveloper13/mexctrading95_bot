@@ -47,19 +47,22 @@ class MEXCClient:
                 price = float(ticker['lastPrice'])
                 volume = float(ticker['volume'])
                 
-                # '60m' yerine '1h' kullan
-                klines_1h = await client.get_kline(symbol, '1h', limit=100)
+                # 60m intervalini kullan
+                klines_60m = await client.get_kline(symbol, '60m', limit=100)
                 klines_4h = await client.get_kline(symbol, '4h', limit=100)
                 order_book = await client.get_order_book(symbol, limit=10)
                 
                 data[symbol] = {
                     'price': price,
                     'volume': volume,
-                    'klines_1h': len(klines_1h),
+                    'klines_60m': len(klines_60m),
                     'klines_4h': len(klines_4h),
                     'order_book_bids': len(order_book['bids'])
                 }
-                logger.info(f"{symbol} için veri alındı: fiyat={price}, hacim={volume}, klines_1h={len(klines_1h)}, klines_4h={len(klines_4h)}, order_book_bids={len(order_book['bids'])}")
+                logger.info(f"{symbol} için veri alındı: fiyat={price}, hacim={volume}, klines_60m={len(klines_60m)}, klines_4h={len(klines_4h)}, order_book_bids={len(order_book['bids'])}")
+                
+                # API hız sınırları için kısa bir gecikme
+                await asyncio.sleep(0.1)
             except Exception as e:
                 logger.warning(f"{symbol} için veri alınırken hata: {str(e)}")
         
