@@ -122,59 +122,20 @@ class DeepSeekClient:
     """DeepSeek API ile coin analizi yapar."""
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
+        self.storage = Storage()
 
-    def parse_deepseek_response(self, text, current_price):
-        """DeepSeek yanıtını parse eder."""
-        try:
-            entry_price = float(re.search(r'Giriş Fiyatı: (\d+\.?\d*)', text).group(1)) if re.search(r'Giriş Fiyatı: (\d+\.?\d*)', text) else current_price
-            exit_price = float(re.search(r'Çıkış Fiyatı: (\d+\.?\d*)', text).group(1)) if re.search(r'Çıkış Fiyatı: (\d+\.?\d*)', text) else current_price * 1.02
-            stop_loss = float(re.search(r'Stop Loss: (\d+\.?\d*)', text).group(1)) if re.search(r'Stop Loss: (\d+\.?\d*)', text) else current_price * 0.98
-            leverage = re.search(r'Kaldıraç: ([0-9x]+)', text).group(1) if re.search(r'Kaldıraç: ([0-9x]+)', text) else '1x'
-            pump_prob = int(re.search(r'Pump Olasılığı: (\d+)%', text).group(1)) if re.search(r'Pump Olasılığı: (\d+)%', text) else 50
-            dump_prob = int(re.search(r'Dump Olasılığı: (\d+)%', text).group(1)) if re.search(r'Dump Olasılığı: (\d+)%', text) else 50
-            trend = re.search(r'Trend: (\w+)', text).group(1) if re.search(r'Trend: (\w+)', text) else 'Nötr'
-            support = float(re.search(r'Destek Seviyesi: (\d+\.?\d*)', text).group(1)) if re.search(r'Destek Seviyesi: (\d+\.?\d*)', text) else current_price * 0.95
-            resistance = float(re.search(r'Direnç Seviyesi: (\d+\.?\d*)', text).group(1)) if re.search(r'Direnç Seviyesi: (\d+\.?\d*)', text) else current_price * 1.05
-            risk_reward = float(re.search(r'Risk/Ödül Oranı: (\d+\.?\d*)', text).group(1)) if re.search(r'Risk/Ödül Oranı: (\d+\.?\d*)', text) else (exit_price - entry_price) / (entry_price - stop_loss) if entry_price > stop_loss else 1.0
-            fundamental = re.search(r'Temel Analiz: (.+?)(?:\n|$)', text).group(1)[:500] if re.search(r'Temel Analiz: (.+?)(?:\n|$)', text) else text[:500]
-            comment = re.search(r'Yorum: (.+?)(?:\n|$)', text).group(1)[:500] if re.search(r'Yorum: (.+?)(?:\n|$)', text) else "Bekle: Güçlü alım veya satım sinyali yok. Hacim artışı izlenmeli."
-            return {
-                'entry_price': entry_price,
-                'exit_price': exit_price,
-                'stop_loss': stop_loss,
-                'leverage': leverage,
-                'pump_probability': pump_prob,
-                'dump_probability': dump_prob,
-                'trend': trend,
-                'support_level': support,
-                'resistance_level': resistance,
-                'risk_reward_ratio': risk_reward,
-                'fundamental_analysis': fundamental,
-                'comment': comment
-            }
-        except Exception as e:
-            logger.error(f"DeepSeek yanıtı parse edilirken hata: {e}")
-            return {
-                'entry_price': current_price,
-                'exit_price': current_price * 1.02,
-                'stop_loss': current_price * 0.98,
-                'leverage': '1x',
-                'pump_probability': 50,
-                'dump_probability': 50,
-                'trend': 'Nötr',
-                'support_level': current_price * 0.95,
-                'resistance_level': current_price * 1.05,
-                'risk_reward_ratio': 1.0,
-                'fundamental_analysis': 'Analiz başarısız',
-                'comment': 'Bekle: Güçlü alım veya satım sinyali yok. Hacim artışı izlenmeli.'
-            }
-
-    def analyze_coin(self, symbol, data, trade_type):
+    def analyze_coin(self, symbol, data, trade_type, chat_id):
         """DeepSeek API ile coin analizi yapar."""
-        logger.info(f"{symbol} için {trade_type} analizi yapılıyor")
+        logger.info(f"{symbol} için {trade_type} analizi yapılıyor, chat_id={chat_id}")
         try:
+            # Grup konuşmalarını yükle
+            conversations = self.storage.load_conversations()
+            group_context = conversations.get(str(chat_id), [])
+            context_str = "\n".join([f"[{c['timestamp']}] {c['message']}" for c in group_context])
+
             prompt = f"""
-            {symbol} için {trade_type} işlem stratejisi analiz et. Tüm yanıtlar Türkçe olmalı:
+            {symbol} için {trade_type} işlem stratejisi analizi yap. Yanıt tamamen Türkçe olmalı. Aşağıdaki piyasa verilerini ve teknik göstergeleri kullanarak özgün, detaylı ve bağlama uygun bir analiz üret:
+
             - Mevcut Fiyat: {data['price']} USDT
             - Hacim Değişimleri: 
               - 60m: {data.get('indicators', {}).get('volume_change_60m', 'Yok')}%
@@ -183,26 +144,29 @@ class DeepSeekClient:
             - MACD: 
               - 60m: {data.get('indicators', {}).get('macd_60m', 'Yok')}
             - Bid/Ask Oranı: {data.get('indicators', {}).get('bid_ask_ratio', 'Yok')}
-            Sağla:
-            - Giriş Fiyatı: <USDT cinsinden kesin fiyat>
-            - Çıkış Fiyatı: <USDT cinsinden kesin fiyat>
-            - Stop Loss: <USDT cinsinden kesin fiyat>
-            - Kaldıraç: <örneğin, spot için 1x, vadeli için 3x>
-            - Pump Olasılığı: <%> (RSI, hacim ve bid/ask oranına göre)
-            - Dump Olasılığı: <%> (RSI, hacim ve bid/ask oranına göre)
-            - Trend: <Yükseliş/Düşüş/Nötr>
-            - Destek Seviyesi: <USDT cinsinden kesin fiyat>
-            - Direnç Seviyesi: <USDT cinsinden kesin fiyat>
-            - Risk/Ödül Oranı: <örneğin, 2.0>
-            - Temel Analiz: <500 karakterlik detaylı özet, hacim trendleri, piyasa duyarlılığı ve alım/satım baskısı dahil>
-            - Yorum: <Al/Sat/Bekle önerisi, göstergelere dayalı ayrıntılı gerekçe, 500 karakter sınırı, Türkçe>
+
+            Grup konuşma geçmişi (son mesajlar):
+            {context_str if context_str else 'Grup konuşma geçmişi yok.'}
+
+            Analizin şu bilgileri içermesini bekliyorum, ancak format ve üslup tamamen sana bağlı:
+            - Önerilen giriş, çıkış ve stop-loss fiyatları (USDT cinsinden).
+            - Kaldıraç önerisi (örneğin, spot için 1x, vadeli için uygun bir seviye).
+            - Pump ve dump olasılıkları (% cinsinden, göstergelere dayalı).
+            - Trend tahmini (yükseliş, düşüş veya nötr).
+            - Destek ve direnç seviyeleri (USDT cinsinden).
+            - Risk/ödül oranı.
+            - Piyasa duyarlılığı, hacim trendleri ve alım/satım baskısını içeren temel analiz.
+            - Özgün bir yorum (Al/Sat/Bekle önerisi ve gerekçeleri, sabit ifadelerden kaçın).
+
+            Grup konuşmalarını dikkate alarak analizi kişiselleştir. Yanıtın doğal, akıcı ve profesyonel olsun. Sabit veya tekrarlayan ifadelerden kaçın, yaratıcı ol.
             """
             response = self.client.chat.completions.create(
-                model="deepseek-chat",
+                model="deepseek-moe",  # Daha gelişmiş bir model (varsa)
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=500
+                max_tokens=5000  # Daha kapsamlı yanıtlar için artırıldı
             )
             analysis_text = response.choices[0].message.content
+            logger.info(f"DeepSeek ham yanıtı ({symbol}): {analysis_text}")  # Ham yanıtı logla
             return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
         except Exception as e:
             logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {e}")
@@ -218,15 +182,122 @@ class DeepSeekClient:
                     'support_level': data['price'] * 0.95,
                     'resistance_level': data['price'] * 1.05,
                     'risk_reward_ratio': 1.0,
-                    'fundamental_analysis': 'Analiz başarısız',
-                    'comment': 'Bekle: Güçlü alım veya satım sinyali yok. Hacim artışı izlenmeli.'
+                    'fundamental_analysis': 'Analiz başarısız: Veri yetersiz.',
+                    'comment': self.generate_dynamic_default_comment(data)  # Dinamik varsayılan
                 }
             }
 
+    def parse_deepseek_response(self, text, current_price):
+        """DeepSeek yanıtını esnek bir şekilde parse eder."""
+        try:
+            result = {
+                'entry_price': current_price,
+                'exit_price': current_price * 1.02,
+                'stop_loss': current_price * 0.98,
+                'leverage': '1x',
+                'pump_probability': 50,
+                'dump_probability': 50,
+                'trend': 'Nötr',
+                'support_level': current_price * 0.95,
+                'resistance_level': current_price * 1.05,
+                'risk_reward_ratio': 1.0,
+                'fundamental_analysis': text[:500] if text else 'Analiz başarısız',
+                'comment': text[:500] if text else 'Analiz başarısız: Veri yetersiz.'
+            }
+
+            # Esnek ayrıştırma
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip().lower()
+                if 'giriş fiyatı' in line:
+                    result['entry_price'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price
+                elif 'çıkış fiyatı' in line:
+                    result['exit_price'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price * 1.02
+                elif 'stop loss' in line:
+                    result['stop_loss'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price * 0.98
+                elif 'kaldıraç' in line:
+                    result['leverage'] = line.split(':')[1].strip() if ':' in line else '1x'
+                elif 'pump olasılığı' in line:
+                    result['pump_probability'] = int(re.search(r'\d+', line).group(0)) if re.search(r'\d+', line) else 50
+                elif 'dump olasılığı' in line:
+                    result['dump_probability'] = int(re.search(r'\d+', line).group(0)) if re.search(r'\d+', line) else 50
+                elif 'trend' in line:
+                    result['trend'] = line.split(':')[1].strip() if ':' in line else 'Nötr'
+                elif 'destek seviyesi' in line:
+                    result['support_level'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price * 0.95
+                elif 'direnç seviyesi' in line:
+                    result['resistance_level'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price * 1.05
+                elif 'risk/ödül oranı' in line:
+                    result['risk_reward_ratio'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else 1.0
+                elif 'temel analiz' in line:
+                    result['fundamental_analysis'] = line.split(':')[1].strip()[:500] if ':' in line else text[:500]
+                elif 'yorum' in line:
+                    result['comment'] = line.split(':')[1].strip()[:500] if ':' in line else text[:500]
+
+            # Yorum yoksa, DeepSeek'in yanıtını olduğu gibi kullan
+            if result['comment'] == 'Analiz başarısız: Veri yetersiz.' and text:
+                result['comment'] = text[-500:] if len(text) > 500 else text
+
+            return result
+        except Exception as e:
+            logger.error(f"DeepSeek yanıtı parse edilirken hata: {e}")
+            return {
+                'entry_price': current_price,
+                'exit_price': current_price * 1.02,
+                'stop_loss': current_price * 0.98,
+                'leverage': '1x',
+                'pump_probability': 50,
+                'dump_probability': 50,
+                'trend': 'Nötr',
+                'support_level': current_price * 0.95,
+                'resistance_level': current_price * 1.05,
+                'risk_reward_ratio': 1.0,
+                'fundamental_analysis': 'Analiz başarısız',
+                'comment': self.generate_dynamic_default_comment({'price': current_price})
+            }
+
+    def generate_dynamic_default_comment(self, data):
+        """Göstergelere dayalı dinamik bir varsayılan yorum üretir."""
+        indicators = data.get('indicators', {})
+        rsi_60m = indicators.get('rsi_60m', 0.0)
+        volume_change_60m = indicators.get('volume_change_60m', 0.0)
+        macd_60m = indicators.get('macd_60m', 0.0)
+        bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
+
+        comment = "Analiz: "
+        if rsi_60m > 70:
+            comment += "RSI aşırı alım bölgesinde, düşüş riski yüksek. "
+        elif rsi_60m < 30:
+            comment += "RSI aşırı satım bölgesinde, alım fırsatı olabilir. "
+        else:
+            comment += "RSI nötr, yön belirsiz. "
+
+        if volume_change_60m > 100:
+            comment += "Hacimde güçlü artış, hareketlilik bekleniyor. "
+        elif volume_change_60m < -50:
+            comment += "Hacimde ciddi düşüş, piyasa durgun. "
+        else:
+            comment += f"Hacimde %{volume_change_60m:.2f} değişim, dikkatli takip gerekli. "
+
+        if macd_60m > 0:
+            comment += "MACD yükseliş sinyali veriyor. "
+        elif macd_60m < 0:
+            comment += "MACD düşüş sinyali veriyor. "
+
+        if bid_ask_ratio > 1.5:
+            comment += "Güçlü alım baskısı var."
+        elif bid_ask_ratio < 0.7:
+            comment += "Satış baskısı hakim."
+        else:
+            comment += "Alım/satım dengeli."
+
+        return comment[:500]
+
 class Storage:
-    """Analiz sonuçlarını depolar ve yükler."""
+    """Analiz sonuçlarını ve grup konuşmalarını depolar."""
     def __init__(self):
         self.file_path = "analysis.json"
+        self.conversation_file_path = "conversations.json"
 
     def save_analysis(self, data):
         """Analiz sonuçlarını JSON dosyasına kaydeder."""
@@ -249,6 +320,36 @@ class Storage:
             return {}
         except Exception as e:
             logger.error(f"Analiz yüklenirken hata: {e}")
+            return {}
+
+    def save_conversation(self, chat_id, message, timestamp):
+        """Grup konuşmalarını kaydeder."""
+        logger.info(f"Konuşma kaydediliyor: chat_id={chat_id}")
+        try:
+            conversations = self.load_conversations()
+            if str(chat_id) not in conversations:
+                conversations[str(chat_id)] = []
+            conversations[str(chat_id)].append({
+                'message': message,
+                'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            })
+            # Son 50 mesajı sakla (bellek yönetimi için)
+            conversations[str(chat_id)] = conversations[str(chat_id)][-50:]
+            with open(self.conversation_file_path, 'w') as f:
+                json.dump(conversations, f, indent=2)
+        except Exception as e:
+            logger.error(f"Konuşma kaydedilirken hata: {e}")
+
+    def load_conversations(self):
+        """Grup konuşmalarını yükler."""
+        logger.info("Konuşmalar yükleniyor")
+        try:
+            with open(self.conversation_file_path, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.error(f"Konuşmalar yüklenirken hata: {e}")
             return {}
 
 def calculate_indicators(kline_1m, kline_5m, kline_15m, kline_30m, kline_60m, order_book):
@@ -357,11 +458,11 @@ class TelegramBot:
         """Telegram botunu başlatır."""
         logger.info("TelegramBot başlatılıyor")
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
+        self.storage = Storage()  # Storage sınıfını başlat
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not bot_token:
             logger.error("TELEGRAM_BOT_TOKEN eksik")
             raise ValueError("TELEGRAM_BOT_TOKEN eksik")
-        
         try:
             self.app = Application.builder().token(bot_token).build()
             logger.info("Application başlatıldı")
@@ -379,117 +480,23 @@ class TelegramBot:
             logger.error(f"Application başlatılırken hata: {e}")
             raise
 
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start komutu için menü gösterir."""
-        logger.info(f"Start komutu alındı, chat_id={update.effective_chat.id}")
-        keyboard = [
-            [InlineKeyboardButton("Top 10 Spot Analizi", callback_data='top_10_spot')],
-            [InlineKeyboardButton("Top 100 Spot Analizi", callback_data='top_100_spot')],
-            [InlineKeyboardButton("Top 10 Vadeli Analizi", callback_data='top_10_futures')],
-            [InlineKeyboardButton("Top 100 Vadeli Analizi", callback_data='top_100_futures')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "Analiz için butonları kullanabilir veya /analyze <symbol> [trade_type] komutuyla coin analizi yapabilirsiniz (örn. /analyze BTCUSDT spot).",
-            reply_markup=reply_markup
-        )
-
-    async def analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Belirtilen sembol için analiz yapar."""
-        logger.info(f"Analyze komutu alındı: {update.message.text}")
-        try:
-            args = update.message.text.split()
-            if len(args) < 2:
-                await update.message.reply_text("Lütfen bir sembol girin. Örnek: /analyze BTCUSDT spot")
-                return
-            symbol = args[1].upper()
-            trade_type = args[2].lower() if len(args) > 2 else 'spot'
-            if trade_type not in ['spot', 'futures']:
-                await update.message.reply_text("Trade tipi 'spot' veya 'futures' olmalı. Örnek: /analyze BTCUSDT spot")
-                return
-            if not symbol.endswith('USDT'):
-                await update.message.reply_text("Sembol USDT çifti olmalı. Örnek: /analyze BTCUSDT")
-                return
-
-            analysis_key = f"{symbol}_{trade_type}_{update.effective_chat.id}"
-            if analysis_key in self.active_analyses:
-                await update.message.reply_text(f"{symbol} için {trade_type} analizi zaten yapılıyor, lütfen bekleyin.")
-                return
-            self.active_analyses[analysis_key] = True
-
-            mexc = MEXCClient()
-            if not await mexc.validate_symbol(symbol):
-                del self.active_analyses[analysis_key]
-                await update.message.reply_text(f"Hata: {symbol} geçersiz bir işlem çifti.")
-                return
-
-            await update.message.reply_text(f"{symbol} için {trade_type} analizi yapılıyor...")
-            data = await self.process_coin(symbol, mexc, trade_type, update.effective_chat.id)
-            await mexc.close()
-            del self.active_analyses[analysis_key]
-
-            if not data:
-                await update.message.reply_text(f"{symbol} için analiz yapılamadı.")
-        except Exception as e:
-            logger.error(f"Analyze komutunda hata: {e}")
-            await update.message.reply_text(f"Hata: {str(e)}")
-            if analysis_key in self.active_analyses:
-                del self.active_analyses[analysis_key]
-
-    async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Buton tıklamalarını işler."""
-        query = update.callback_query
-        await query.answer()
-        logger.info(f"Buton tıklandı: {query.data}")
-        try:
-            parts = query.data.split('_')
-            limit = int(parts[1])
-            trade_type = parts[2]
-            await query.message.reply_text(f"{trade_type.upper()} analizi yapılıyor (Top {limit})...")
-            data = {'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type}
-            if self.app.job_queue is None:
-                await self.analyze_and_send(context, data)
-            else:
-                self.app.job_queue.run_once(
-                    self.analyze_and_send,
-                    0,
-                    data=data,
-                    chat_id=self.group_id
-                )
-        except Exception as e:
-            logger.error(f"Buton işleyicisinde hata: {e}")
-            await query.message.reply_text(f"Hata: {str(e)}")
-
-    async def analyze_and_send(self, context: ContextTypes.DEFAULT_TYPE, data=None):
-        """Top coin'ler için analiz yapar ve gönderir."""
-        if data is None:
-            data = context.job.data
-        chat_id = data['chat_id']
-        limit = data['limit']
-        trade_type = data['trade_type']
-        logger.info(f"Analiz yapılıyor: chat_id={chat_id}, limit={limit}, trade_type={trade_type}")
-        try:
-            if limit == 100 and trade_type == 'spot':
-                results = await self.analyze_top_100_from_endpoints(chat_id, trade_type)
-            else:
-                results = await self.analyze_coins(limit, trade_type, chat_id)
-            if not results.get(f'top_{limit}_{trade_type}'):
-                await context.bot.send_message(chat_id=chat_id, text=f"Top {limit} {trade_type} analizi için sonuç bulunamadı.")
-            logger.info(f"Top {limit} {trade_type} için analiz tamamlandı")
-        except Exception as e:
-            logger.error(f"analyze_and_send sırasında hata: {e}")
-            await context.bot.send_message(chat_id=chat_id, text=f"{trade_type} analizi sırasında hata: {str(e)}")
-
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Genel mesajlara yanıt verir."""
+        """Genel mesajlara yanıt verir ve konuşmaları kaydeder."""
         logger.info(f"Mesaj alındı: {update.message.text}")
         try:
+            # Mesajı kaydet
+            self.storage.save_conversation(
+                chat_id=update.effective_chat.id,
+                message=update.message.text,
+                timestamp=datetime.now()
+            )
             deepseek = DeepSeekClient()
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     deepseek.client.chat.completions.create,
-                    model="deepseek-chat",
-                    messages=[{"role": "user", "content": update.message.text}]
+                    model="deepseek-moe",
+                    messages=[{"role": "user", "content": update.message.text}],
+                    max_tokens=5000
                 ),
                 timeout=20
             )
@@ -497,65 +504,6 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Chat sırasında hata: {e}")
             await update.message.reply_text(f"Hata: {str(e)}")
-
-    async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Kaydedilen analizleri gösterir."""
-        logger.info("show_analysis komutu alındı")
-        try:
-            storage = Storage()
-            data = storage.load_analysis()
-            messages = []
-            for key, coin_data in data.items():
-                if isinstance(coin_data, dict) and 'coin' in coin_data:
-                    trade_type = key.split('_')[-1]
-                    message = self.format_results(coin_data, trade_type, coin_data['coin'])
-                    messages.append(message)
-            if messages:
-                await update.message.reply_text("\n\n".join(messages))
-            else:
-                await update.message.reply_text("Analiz sonucu bulunamadı.")
-        except Exception as e:
-            logger.error(f"Analiz yüklenirken hata: {e}")
-            await update.message.reply_text(f"Hata: {str(e)}")
-
-    def format_results(self, coin_data, trade_type, symbol):
-        """Analiz sonuçlarını formatlar."""
-        logger.info(f"{symbol} ({trade_type}) için sonuçlar biçimlendiriliyor")
-        indicators = coin_data.get('indicators', {})
-        analysis = coin_data.get('deepseek_analysis', {}).get('short_term', {})
-        volume_changes = {'60m': indicators.get('volume_change_60m', 0.0)}
-        volume_changes_str = f"60m: {volume_changes['60m']:.2f}" if isinstance(volume_changes['60m'], (int, float)) else "Yok"
-        bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
-        bid_ask_ratio_str = f"{bid_ask_ratio:.2f}" if isinstance(bid_ask_ratio, (int, float)) else "Yok"
-        rsi_values = {'60m': indicators.get('rsi_60m', 0.0)}
-        macd_values = {'60m': indicators.get('macd_60m', 0.0)}
-        try:
-            message = (
-                f"📊 {symbol} {trade_type.upper()} Analizi ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                f"- Kısa Vadeli:\n"
-                f"  - Giriş: ${analysis.get('entry_price', 0):.2f}\n"
-                f"  - Çıkış: ${analysis.get('exit_price', 0):.2f}\n"
-                f"  - Stop Loss: ${analysis.get('stop_loss', 0):.2f}\n"
-                f"  - Kaldıraç: {analysis.get('leverage', 'Yok')}\n"
-                f"- Trend: {analysis.get('trend', 'Nötr')}\n"
-                f"- Pump Olasılığı: {analysis.get('pump_probability', 0)}%\n"
-                f"- Dump Olasılığı: {analysis.get('dump_probability', 0)}%\n"
-                f"- Destek Seviyesi: ${analysis.get('support_level', 0):.2f}\n"
-                f"- Direnç Seviyesi: ${analysis.get('resistance_level', 0):.2f}\n"
-                f"- Risk/Ödül Oranı: {analysis.get('risk_reward_ratio', 0):.2f}\n"
-                f"- Temel Analiz: {analysis.get('fundamental_analysis', 'Veri yok')}\n"
-                f"- Göstergeler:\n"
-                f"  - Hacim Değişimi: {volume_changes_str}%\n"
-                f"  - Bid/Ask Oranı: {bid_ask_ratio_str}\n"
-                f"  - RSI: 60m: {rsi_values['60m']:.2f}\n"
-                f"  - MACD: 60m: {macd_values['60m']:.2f}\n"
-                f"- Gösterge Açıklamaları:\n{explain_indicators(indicators)}\n"
-                f"- DeepSeek Yorumu: {analysis.get('comment', 'Yorum yok.')}"
-            )
-            return message
-        except Exception as e:
-            logger.error(f"{symbol} için sonuçlar biçimlendirilirken hata: {e}")
-            return f"{symbol} analizi biçimlendirilirken hata: {str(e)}"
 
     async def process_coin(self, symbol, mexc, trade_type, chat_id, endpoint=None):
         """Tek bir coin için analiz yapar."""
@@ -581,16 +529,14 @@ class TelegramBot:
                 return None
 
             deepseek = DeepSeekClient()
-            data['deepseek_analysis'] = deepseek.analyze_coin(symbol, data, trade_type)
+            data['deepseek_analysis'] = deepseek.analyze_coin(symbol, data, trade_type, chat_id)  # chat_id ekledik
             data['coin'] = symbol
 
             message = self.format_results(data, trade_type, symbol)
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             logger.info(f"{symbol} ({trade_type}) için analiz gönderildi")
 
-            storage = Storage()
-            storage.save_analysis({f'{symbol}_{trade_type}': data})
-
+            self.storage.save_analysis({f'{symbol}_{trade_type}': data})
             return data
         except Exception as e:
             logger.error(f"{symbol} ({trade_type}) işlenirken hata: {e}")
