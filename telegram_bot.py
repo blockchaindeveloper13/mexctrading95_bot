@@ -33,22 +33,24 @@ class MEXCClient:
         try:
             async with aiohttp.ClientSession() as session:
                 klines = {}
-                if endpoint:
-                    async with session.get(endpoint) as response:
-                        if response.status == 200:
-                            klines['60m'] = await response.json()
-                        else:
-                            logger.warning(f"{symbol} için 60m kline verisi alınamadı: {response.status}")
-                            klines['60m'] = []
-                else:
-                    url = f"{self.base_url}/api/v3/klines?symbol={symbol}&interval=60m&limit=100"
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            klines['60m'] = await response.json()
-                        else:
-                            logger.warning(f"{symbol} için 60m kline verisi alınamadı: {response.status}")
-                            klines['60m'] = []
-                await asyncio.sleep(0.5)
+                intervals = ['1m', '5m', '60m', '1d']  # 1 dakika, 5 dakika, 60 dakika, 24 saat
+                for interval in intervals:
+                    if endpoint and interval == '60m':
+                        async with session.get(endpoint) as response:
+                            if response.status == 200:
+                                klines[interval] = await response.json()
+                            else:
+                                logger.warning(f"{symbol} için {interval} kline verisi alınamadı: {response.status}")
+                                klines[interval] = []
+                    else:
+                        url = f"{self.base_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
+                        async with session.get(url) as response:
+                            if response.status == 200:
+                                klines[interval] = await response.json()
+                            else:
+                                logger.warning(f"{symbol} için {interval} kline verisi alınamadı: {response.status}")
+                                klines[interval] = []
+                    await asyncio.sleep(0.5)
 
                 order_book_url = f"{self.base_url}/api/v3/depth?symbol={symbol}&limit=10"
                 async with session.get(order_book_url) as order_book_response:
@@ -109,7 +111,7 @@ class DeepSeekClient:
     """DeepSeek API ile coin analizi yapar."""
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
-        self.storage = Storage()  # Doğru girinti: 4 boşluk
+        self.storage = Storage()
 
     def analyze_coin(self, symbol, data, trade_type, chat_id):
         """DeepSeek API ile coin analizi yapar."""
@@ -120,15 +122,24 @@ class DeepSeekClient:
             context_str = "\n".join([f"[{c['timestamp']}] {c['message']}" for c in group_context])
 
             prompt = f"""
-            {symbol} için {trade_type} işlem stratejisi analizi yap. Yanıt tamamen Türkçe olmalı, minimum 500 karakter ve maksimum 5000 karakter uzunluğunda olmalı. Aşağıdaki piyasa verilerini ve teknik göstergeleri kullanarak özgün, detaylı ve bağlama uygun bir analiz üret. Sabit veya tekrarlayan ifadelerden kaçın, doğal ve profesyonel bir üslup kullan. Grup konuşma geçmişini dikkate alarak analizi kişiselleştir ve geçmişteki sorulara veya yorumlara yanıt ver (örneğin, 'yükselecek mi?').
+            {symbol} için {trade_type} işlem stratejisi analizi yap. Yanıt tamamen Türkçe olmalı, minimum 500 karakter ve maksimum 5000 karakter uzunluğunda olmalı. Aşağıdaki piyasa verilerini ve teknik göstergeleri kullanarak özgün, detaylı ve bağlama uygun bir analiz üret. Sabit veya tekrarlayan ifadelerden kaçın, doğal ve profesyonel bir üslup kullan. Grup konuşma geçmişini dikkate alarak analizi kişiselleştir ve geçmişteki sorulara veya yorumlara yanıt ver (örneğin, 'yükselecek mi?'). Tüm zaman dilimlerini (1m, 5m, 60m, 1d) analizine dahil et.
 
             - Mevcut Fiyat: {data['price']} USDT
-            - Hacim Değişimi: 
+            - Hacim Değişimi:
+              - 1m: {data.get('indicators', {}).get('volume_change_1m', 'Bilinmiyor')}%
+              - 5m: {data.get('indicators', {}).get('volume_change_5m', 'Bilinmiyor')}%
               - 60m: {data.get('indicators', {}).get('volume_change_60m', 'Bilinmiyor')}%
-            - RSI: 
+              - 1d: {data.get('indicators', {}).get('volume_change_1d', 'Bilinmiyor')}%
+            - RSI:
+              - 1m: {data.get('indicators', {}).get('rsi_1m', 'Bilinmiyor')}
+              - 5m: {data.get('indicators', {}).get('rsi_5m', 'Bilinmiyor')}
               - 60m: {data.get('indicators', {}).get('rsi_60m', 'Bilinmiyor')}
-            - MACD: 
+              - 1d: {data.get('indicators', {}).get('rsi_1d', 'Bilinmiyor')}
+            - MACD:
+              - 1m: {data.get('indicators', {}).get('macd_1m', 'Bilinmiyor')}
+              - 5m: {data.get('indicators', {}).get('macd_5m', 'Bilinmiyor')}
               - 60m: {data.get('indicators', {}).get('macd_60m', 'Bilinmiyor')}
+              - 1d: {data.get('indicators', {}).get('macd_1d', 'Bilinmiyor')}
             - Bid/Ask Oranı: {data.get('indicators', {}).get('bid_ask_ratio', 'Bilinmiyor')}
 
             Grup konuşma geçmişi:
@@ -141,7 +152,7 @@ class DeepSeekClient:
             - Trend tahmini (yükseliş, düşüş veya nötr).
             - Destek ve direnç seviyeleri (USDT cinsinden).
             - Risk/ödül oranı.
-            - Piyasa duyarlılığı, hacim trendleri ve alım/satım baskısını içeren temel analiz.
+            - Piyasa duyarlılığı, hacim trendleri ve alım/satım baskısını içeren temel analiz (tüm zaman dilimlerini dikkate al).
             - Özgün bir yorum (Al/Sat/Bekle önerisi ve gerekçeleri, yaratıcı ve bağlama uygun).
 
             Grup konuşmalarındaki sorulara veya yorumlara yanıt ver. Yanıtın akıcı, profesyonel ve en az 500 karakter olsun. Sabit ifadelerden uzak dur, yaratıcı ol.
@@ -256,35 +267,36 @@ class DeepSeekClient:
     def generate_dynamic_default_comment(self, data):
         """Göstergelere dayalı dinamik bir varsayılan yorum üretir."""
         indicators = data.get('indicators', {})
-        rsi_60m = indicators.get('rsi_60m', 0.0)
-        volume_change_60m = indicators.get('volume_change_60m', 0.0)
-        macd_60m = indicators.get('macd_60m', 0.0)
-        bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
-
         comment = "Piyasa şu anda belirsiz bir seyir izliyor. "
-        if rsi_60m > 70:
-            comment += f"RSI {rsi_60m:.2f} ile aşırı alım bölgesinde, düzeltme riski mevcut. "
-        elif rsi_60m < 30:
-            comment += f"RSI {rsi_60m:.2f} ile aşırı satım bölgesinde, alım fırsatı değerlendirilebilir. "
-        else:
-            comment += f"RSI {rsi_60m:.2f} ile nötr, belirgin bir trend sinyali yok. "
+        for interval in ['1m', '5m', '60m', '1d']:
+            rsi = indicators.get(f'rsi_{interval}', 0.0)
+            volume_change = indicators.get(f'volume_change_{interval}', 0.0)
+            macd = indicators.get(f'macd_{interval}', 0.0)
 
-        if volume_change_60m > 100:
-            comment += f"Hacimde %{volume_change_60m:.2f} artış var, piyasada hareketlilik bekleniyor. "
-        elif volume_change_60m < -50:
-            comment += f"Hacimde %{volume_change_60m:.2f} düşüş var, piyasa durgun görünüyor. "
-        else:
-            comment += f"Hacimde %{volume_change_60m:.2f} değişim, dikkatli izlenmeli. "
+            if rsi > 70:
+                comment += f"{interval}: RSI {rsi:.2f}, aşırı alım bölgesinde, düzeltme riski mevcut. "
+            elif rsi < 30:
+                comment += f"{interval}: RSI {rsi:.2f}, aşırı satım bölgesinde, alım fırsatı olabilir. "
+            else:
+                comment += f"{interval}: RSI {rsi:.2f}, nötr bölgede, net bir sinyal yok. "
 
-        if macd_60m > 0:
-            comment += f"MACD {macd_60m:.2f} ile yükseliş eğilimi gösteriyor. "
-        elif macd_60m < 0:
-            comment += f"MACD {macd_60m:.2f} ile düşüş eğilimi sinyali veriyor. "
+            if volume_change > 100:
+                comment += f"{interval}: Hacimde %{volume_change:.2f} artış, hareketlilik bekleniyor. "
+            elif volume_change < -50:
+                comment += f"{interval}: Hacimde %{volume_change:.2f} düşüş, piyasa durgun. "
+            else:
+                comment += f"{interval}: Hacimde %{volume_change:.2f} değişim, dikkatli izlenmeli. "
 
+            if macd > 0:
+                comment += f"{interval}: MACD {macd:.2f}, yükseliş eğilimi sinyali. "
+            elif macd < 0:
+                comment += f"{interval}: MACD {macd:.2f}, düşüş eğilimi sinyali. "
+
+        bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
         if bid_ask_ratio > 1.5:
             comment += f"Bid/ask oranı {bid_ask_ratio:.2f}, güçlü alım baskısı mevcut."
         elif bid_ask_ratio < 0.7:
-            comment += f"Bid/ask oranı {bid_ask_ratio:.2f}, satış baskısı hakim."
+            comment += f"Bid/ask oranı {id_ask_ratio:.2f}, satış baskısı hakim."
         else:
             comment += f"Bid/ask oranı {bid_ask_ratio:.2f}, alım ve satım baskıları dengeli."
 
@@ -350,28 +362,31 @@ class Storage:
             logger.error(f"Konuşmalar yüklenirken hata: {e}")
             return {}
 
-def calculate_indicators(kline_60m, order_book):
-    """60m zaman dilimi için teknik göstergeleri hesaplar."""
+def calculate_indicators(kline_data, order_book):
+    """Farklı zaman dilimleri için teknik göstergeleri hesaplar."""
     logger.info("Teknik göstergeler hesaplanıyor")
     try:
         indicators = {}
-        if kline_60m and len(kline_60m) > 1:
-            df = pd.DataFrame(
-                kline_60m,
-                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_timestamp', 'quote_volume']
-            )
-            df['close'] = df['close'].astype(float)
-            df['volume'] = df['volume'].astype(float)
-            volume_change = (df['volume'].iloc[-1] / df['volume'].iloc[-2] - 1) * 100 if df['volume'].iloc[-2] != 0 else 0.0
-            indicators['volume_change_60m'] = volume_change
-            rsi = ta.rsi(df['close'], length=14)
-            indicators['rsi_60m'] = rsi.iloc[-1] if not rsi.empty else 0.0
-            macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
-            indicators['macd_60m'] = macd['MACD_12_26_9'].iloc[-1] if not macd.empty else 0.0
-        else:
-            indicators['volume_change_60m'] = 0.0
-            indicators['rsi_60m'] = 0.0
-            indicators['macd_60m'] = 0.0
+        intervals = ['1m', '5m', '60m', '1d']
+        for interval in intervals:
+            kline = kline_data.get(interval, [])
+            if kline and len(kline) > 1:
+                df = pd.DataFrame(
+                    kline,
+                    columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_timestamp', 'quote_volume']
+                )
+                df['close'] = df['close'].astype(float)
+                df['volume'] = df['volume'].astype(float)
+                volume_change = (df['volume'].iloc[-1] / df['volume'].iloc[-2] - 1) * 100 if df['volume'].iloc[-2] != 0 else 0.0
+                indicators[f'volume_change_{interval}'] = volume_change
+                rsi = ta.rsi(df['close'], length=14)
+                indicators[f'rsi_{interval}'] = rsi.iloc[-1] if not rsi.empty else 0.0
+                macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+                indicators[f'macd_{interval}'] = macd['MACD_12_26_9'].iloc[-1] if not macd.empty else 0.0
+            else:
+                indicators[f'volume_change_{interval}'] = 0.0
+                indicators[f'rsi_{interval}'] = 0.0
+                indicators[f'macd_{interval}'] = 0.0
 
         if order_book and 'bids' in order_book and 'asks' in order_book:
             bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
@@ -384,53 +399,55 @@ def calculate_indicators(kline_60m, order_book):
     except Exception as e:
         logger.error(f"Göstergeler hesaplanırken hata: {e}")
         return {
-            'volume_change_60m': 0.0,
-            'rsi_60m': 0.0,
-            'macd_60m': 0.0,
+            'volume_change_1m': 0.0, 'rsi_1m': 0.0, 'macd_1m': 0.0,
+            'volume_change_5m': 0.0, 'rsi_5m': 0.0, 'macd_5m': 0.0,
+            'volume_change_60m': 0.0, 'rsi_60m': 0.0, 'macd_60m': 0.0,
+            'volume_change_1d': 0.0, 'rsi_1d': 0.0, 'macd_1d': 0.0,
             'bid_ask_ratio': 0.0
         }
 
 def explain_indicators(indicators):
     """Göstergeleri anlaşılır şekilde açıklar."""
     explanations = []
-    volume_change = indicators.get('volume_change_60m', 0.0)
-    rsi = indicators.get('rsi_60m', 0.0)
-    macd = indicators.get('macd_60m', 0.0)
-    
-    if isinstance(volume_change, (int, float)):
-        if volume_change > 100:
-            vol_explain = f"60m: Hacimde %{volume_change:.2f} artış, güçlü alım/satım hareketi olabilir."
-        elif volume_change > 0:
-            vol_explain = f"60m: Hacimde %{volume_change:.2f} artış, ilgi artıyor."
-        elif volume_change < -50:
-            vol_explain = f"60m: Hacimde %{volume_change:.2f} düşüş, piyasada sakinlik var."
-        else:
-            vol_explain = f"60m: Hacimde %{volume_change:.2f} değişim, stabil hareket."
-    else:
-        vol_explain = "60m: Hacim verisi yok."
-    explanations.append(vol_explain)
+    for interval in ['1m', '5m', '60m', '1d']:
+        volume_change = indicators.get(f'volume_change_{interval}', 0.0)
+        rsi = indicators.get(f'rsi_{interval}', 0.0)
+        macd = indicators.get(f'macd_{interval}', 0.0)
 
-    if isinstance(rsi, (int, float)):
-        if rsi > 70:
-            rsi_explain = f"60m: RSI {rsi:.2f}, aşırı alım bölgesinde, düşüş riski olabilir."
-        elif rsi < 30:
-            rsi_explain = f"60m: RSI {rsi:.2f}, aşırı satım bölgesinde, alım fırsatı olabilir."
+        if isinstance(volume_change, (int, float)):
+            if volume_change > 100:
+                vol_explain = f"{interval}: Hacimde %{volume_change:.2f} artış, güçlü alım/satım hareketi olabilir."
+            elif volume_change > 0:
+                vol_explain = f"{interval}: Hacimde %{volume_change:.2f} artış, ilgi artıyor."
+            elif volume_change < -50:
+                vol_explain = f"{interval}: Hacimde %{volume_change:.2f} düşüş, piyasada sakinlik var."
+            else:
+                vol_explain = f"{interval}: Hacimde %{volume_change:.2f} değişim, stabil hareket."
         else:
-            rsi_explain = f"60m: RSI {rsi:.2f}, nötr bölgede, net bir sinyal yok."
-    else:
-        rsi_explain = "60m: RSI verisi yok."
-    explanations.append(rsi_explain)
+            vol_explain = f"{interval}: Hacim verisi yok."
+        explanations.append(vol_explain)
 
-    if isinstance(macd, (int, float)):
-        if macd > 0:
-            macd_explain = f"60m: MACD {macd:.2f}, yükseliş eğilimi sinyali."
-        elif macd < 0:
-            macd_explain = f"60m: MACD {macd:.2f}, düşüş eğilimi sinyali."
+        if isinstance(rsi, (int, float)):
+            if rsi > 70:
+                rsi_explain = f"{interval}: RSI {rsi:.2f}, aşırı alım bölgesinde, düşüş riski olabilir."
+            elif rsi < 30:
+                rsi_explain = f"{interval}: RSI {rsi:.2f}, aşırı satım bölgesinde, alım fırsatı olabilir."
+            else:
+                rsi_explain = f"{interval}: RSI {rsi:.2f}, nötr bölgede, net bir sinyal yok."
         else:
-            macd_explain = f"60m: MACD {macd:.2f}, nötr sinyal."
-    else:
-        macd_explain = "60m: MACD verisi yok."
-    explanations.append(macd_explain)
+            rsi_explain = f"{interval}: RSI verisi yok."
+        explanations.append(rsi_explain)
+
+        if isinstance(macd, (int, float)):
+            if macd > 0:
+                macd_explain = f"{interval}: MACD {macd:.2f}, yükseliş eğilimi sinyali."
+            elif macd < 0:
+                macd_explain = f"{interval}: MACD {macd:.2f}, düşüş eğilimi sinyali."
+            else:
+                macd_explain = f"{interval}: MACD {macd:.2f}, nötr sinyal."
+        else:
+            macd_explain = f"{interval}: MACD verisi yok."
+        explanations.append(macd_explain)
 
     bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
     if isinstance(bid_ask_ratio, (int, float)):
@@ -637,10 +654,6 @@ class TelegramBot:
         logger.info(f"{symbol} ({trade_type}) için sonuçlar biçimlendiriliyor")
         indicators = coin_data.get('indicators', {})
         analysis = coin_data.get('deepseek_analysis', {}).get('short_term', {})
-        volume_changes = indicators.get('volume_change_60m', 'Bilinmiyor')
-        bid_ask_ratio = indicators.get('bid_ask_ratio', 'Bilinmiyor')
-        rsi_values = indicators.get('rsi_60m', 'Bilinmiyor')
-        macd_values = indicators.get('macd_60m', 'Bilinmiyor')
         try:
             message = (
                 f" {symbol} {trade_type.upper()} Analizi ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
@@ -657,10 +670,15 @@ class TelegramBot:
                 f"- Risk/Ödül Oranı: {analysis.get('risk_reward_ratio', 0):.2f}\n"
                 f"- Temel Analiz: {analysis.get('fundamental_analysis', 'Veri yok')}\n"
                 f"- Göstergeler:\n"
-                f"  - Hacim Değişimi: 60m: {volume_changes if isinstance(volume_changes, (int, float)) else 'Bilinmiyor'}%\n"
-                f"  - Bid/Ask Oranı: {bid_ask_ratio if isinstance(bid_ask_ratio, (int, float)) else 'Bilinmiyor'}\n"
-                f"  - RSI: 60m: {rsi_values if isinstance(rsi_values, (int, float)) else 'Bilinmiyor'}\n"
-                f"  - MACD: 60m: {macd_values if isinstance(macd_values, (int, float)) else 'Bilinmiyor'}\n"
+            )
+            for interval in ['1m', '5m', '60m', '1d']:
+                message += (
+                    f"  - Hacim Değişimi: {interval}: {indicators.get(f'volume_change_{interval}', 'Bilinmiyor') if isinstance(indicators.get(f'volume_change_{interval}'), (int, float)) else 'Bilinmiyor'}%\n"
+                    f"  - RSI: {interval}: {indicators.get(f'rsi_{interval}', 'Bilinmiyor') if isinstance(indicators.get(f'rsi_{interval}'), (int, float)) else 'Bilinmiyor'}\n"
+                    f"  - MACD: {interval}: {indicators.get(f'macd_{interval}', 'Bilinmiyor') if isinstance(indicators.get(f'macd_{interval}'), (int, float)) else 'Bilinmiyor'}\n"
+                )
+            message += (
+                f"  - Bid/Ask Oranı: {indicators.get('bid_ask_ratio', 'Bilinmiyor') if isinstance(indicators.get('bid_ask_ratio'), (int, float)) else 'Bilinmiyor'}\n"
                 f"- Gösterge Açıklamaları:\n{explain_indicators(indicators)}\n"
                 f"- DeepSeek Yorumu: {analysis.get('comment', 'Yorum yok.')}"
             )
@@ -674,13 +692,13 @@ class TelegramBot:
         logger.info(f"{symbol} ({trade_type}) işleniyor")
         try:
             data = await mexc.fetch_and_save_market_data(symbol, endpoint)
-            if not data or not data.get('klines', {}).get('60m'):
+            if not data or not any(data.get('klines', {}).get(interval) for interval in ['1m', '5m', '60m', '1d']):
                 logger.warning(f"{symbol} ({trade_type}) için geçerli piyasa verisi yok")
                 await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için geçerli piyasa verisi yok")
                 return None
 
             data['indicators'] = calculate_indicators(
-                data['klines'].get('60m', []),
+                data['klines'],
                 data.get('order_book')
             )
             if not data['indicators']:
@@ -738,7 +756,7 @@ class TelegramBot:
                         await self.app.bot.send_message(chat_id=chat_id, text="endpoints.json alınamadı.")
                         return results
                     endpoints = await response.json()
-            
+
             for entry in endpoints:
                 symbol = entry['symbol']
                 endpoint = entry['endpoint']
