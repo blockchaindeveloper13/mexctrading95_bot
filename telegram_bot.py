@@ -1,10 +1,10 @@
 import os
 import json
-import ccxt.async_support as ccxt
 import pandas as pd
 import pandas_ta as ta
 import logging
 import asyncio
+import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
@@ -22,77 +22,68 @@ load_dotenv()
 class MEXCClient:
     def __init__(self):
         logger.debug("Initializing MEXCClient")
-        self.exchange = ccxt.mexc3({
-            'apiKey': os.getenv('MEXC_API_KEY'),
-            'secret': os.getenv('MEXC_API_SECRET'),
-            'enableRateLimit': True,
-            'options': {'defaultTimeframe': '60m'}
-        })
+        self.api_key = os.getenv('MEXC_API_KEY')
+        self.api_secret = os.getenv('MEXC_API_SECRET')
+        self.base_url = "https://api.mexc.com/api/v3"
         self.data_file = '/tmp/market_data.json'
+        self.session = None  # aiohttp session
 
-    async def get_exchange_info(self):
-        logger.debug("Fetching exchange info")
-        try:
-            markets = await self.exchange.load_markets()
-            return {'symbols': [{'symbol': k} for k in markets.keys()]}
-        except Exception as e:
-            logger.error(f"Error fetching exchange info: {e}")
-            return {'symbols': []}
+    async def initialize_session(self):
+        if not self.session:
+            logger.debug("Creating aiohttp session")
+            self.session = aiohttp.ClientSession()
+        return self.session
 
-    async def get_tickers(self):
-        logger.debug("Fetching tickers")
-        try:
-            return await self.exchange.fetch_tickers()
-        except Exception as e:
-            logger.error(f"Error fetching tickers: {e}")
-            return []
-
-    async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
-        logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries})")
+    async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=3):
+        logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries}, delay: {delay})")
         if not isinstance(timeframe, str) or timeframe not in ['1m', '5m', '15m', '30m', '60m']:
             logger.error(f"Invalid or None timeframe for {symbol}: {timeframe}")
             raise ValueError(f"Invalid timeframe: {timeframe}")
-        try:
-            # CCXT için zaman aralığı dönüşümü
-            tf_mapping = {
-                '1m': '1m',
-                '5m': '5m',
-                '15m': '15m',
-                '30m': '30m',
-                '60m': '1h'  # MEXC API'si 60m yerine 1h kullanıyor
-            }
-            ccxt_timeframe = tf_mapping.get(timeframe)
-            if not ccxt_timeframe:
-                logger.error(f"Invalid timeframe mapping for {symbol}: {timeframe}")
-                raise ValueError(f"Invalid timeframe mapping: {timeframe}")
 
-            for attempt in range(retries):
-                try:
-                    logger.debug(f"Attempting to fetch {timeframe} kline for {symbol}, attempt {attempt + 1}")
-                    klines = await self.exchange.fetch_ohlcv(symbol, ccxt_timeframe, limit=limit)
-                    if klines:
-                        logger.debug(f"Fetched {len(klines)} kline entries for {symbol} ({timeframe})")
-                        return klines
+        tf_mapping = {
+            '1m': '1m',
+            '5m': '5m',
+            '15m': '15m',
+            '30m': '30m',
+            '60m': '1h'  # MEXC API için 60m yerine 1h
+        }
+        api_timeframe = tf_mapping.get(timeframe)
+        if not api_timeframe:
+            logger.error(f"Invalid timeframe mapping for {symbol}: {timeframe}")
+            raise ValueError(f"Invalid timeframe mapping: {timeframe}")
+
+        # Sembolü MEXC API formatına çevir (örneğin, ETH/USDT -> ETHUSDT)
+        api_symbol = symbol.replace('/', '')
+
+        url = f"{self.base_url}/klines?symbol={api_symbol}&interval={api_timeframe}&limit={limit}"
+        logger.debug(f"Kline URL: {url}")
+
+        session = await self.initialize_session()
+        for attempt in range(retries):
+            try:
+                logger.debug(f"Attempt {attempt + 1} to fetch {timeframe} kline for {symbol}")
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        logger.warning(f"HTTP error for {symbol} ({timeframe}): {response.status}")
+                        raise Exception(f"HTTP {response.status}: {await response.text()}")
+                    klines = await response.json()
+                    logger.debug(f"Raw kline response for {symbol} ({timeframe}): {len(klines)} entries")
+                    if klines and isinstance(klines, list):
+                        # MEXC API formatı: [timestamp, open, high, low, close, volume, ...]
+                        # CCXT formatına uyarla: [timestamp, open, high, low, close, volume]
+                        formatted_klines = [[k[0], k[1], k[2], k[3], k[4], k[5]] for k in klines]
+                        logger.debug(f"Fetched {len(formatted_klines)} kline entries for {symbol} ({timeframe})")
+                        return formatted_klines
                     logger.warning(f"No kline data for {symbol} ({timeframe}) on attempt {attempt + 1}")
                     await asyncio.sleep(delay * (attempt + 1))
-                except Exception as e:
-                    logger.warning(f"Attempt {attempt + 1} failed for {symbol} ({timeframe}): {e}")
-                    if attempt == retries - 1:
-                        logger.error(f"Failed to fetch {timeframe} kline for {symbol} after {retries} attempts")
-                        return []
-                    await asyncio.sleep(delay * (attempt + 1))
-            return []
-        except Exception as e:
-            logger.error(f"Error fetching {timeframe} kline for {symbol}: {e}")
-            return []
-
-    async def get_order_book(self, symbol, limit=10):
-        logger.debug(f"Fetching order book for {symbol}")
-        try:
-            return await self.exchange.fetch_order_book(symbol, limit=limit)
-        except Exception as e:
-            logger.error(f"Error fetching order book for {symbol}: {e}")
-            return {'bids': [], 'asks': []}
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed for {symbol} ({timeframe}): {e}")
+                if attempt == retries - 1:
+                    logger.error(f"Failed to fetch {timeframe} kline for {symbol} after {retries} attempts")
+                    return []
+                await asyncio.sleep(delay * (attempt + 1))
+        logger.error(f"All attempts failed for {symbol} ({timeframe})")
+        return []
 
     async def fetch_and_save_market_data(self, symbol):
         logger.info(f"Fetching market data for {symbol}")
@@ -103,25 +94,42 @@ class MEXCClient:
             raise ValueError(f"Invalid timeframes: {timeframes}")
 
         try:
-            ticker = await self.exchange.fetch_ticker(symbol)
-            price = float(ticker.get('last', 0)) if ticker.get('last') else 0.0
-            volume = float(ticker.get('quoteVolume', 0)) if ticker.get('quoteVolume') else 0.0
+            # Ticker verisi için aiohttp
+            api_symbol = symbol.replace('/', '')
+            ticker_url = f"{self.base_url}/ticker/24hr?symbol={api_symbol}"
+            logger.debug(f"Fetching ticker for {symbol}: {ticker_url}")
+            session = await self.initialize_session()
+            async with session.get(ticker_url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch ticker for {symbol}: HTTP {response.status}")
+                    return None
+                ticker = await response.json()
+                price = float(ticker.get('lastPrice', 0)) if ticker.get('lastPrice') else 0.0
+                volume = float(ticker.get('quoteVolume', 0)) if ticker.get('quoteVolume') else 0.0
 
             klines = {}
             for tf in timeframes:
                 logger.debug(f"Fetching {tf} kline for {symbol}")
-                kline_data = await self.get_kline(symbol, tf, limit=100, retries=3, delay=2)
+                kline_data = await self.get_kline(symbol, tf, limit=100, retries=3, delay=3)
                 if not kline_data:
                     logger.warning(f"No {tf} kline data for {symbol}, using empty list")
                     kline_data = []
                 klines[tf] = kline_data
+                logger.debug(f"Kline data for {symbol} ({tf}): {len(kline_data)} entries")
 
-            # Eğer tüm timeframe'ler boşsa, veriyi kaydetme
             if not any(klines[tf] for tf in timeframes):
                 logger.warning(f"All kline data empty for {symbol}, skipping")
                 return None
 
-            order_book = await self.get_order_book(symbol, limit=10)
+            # Order book için aiohttp
+            order_book_url = f"{self.base_url}/depth?symbol={api_symbol}&limit=10"
+            logger.debug(f"Fetching order book for {symbol}: {order_book_url}")
+            async with session.get(order_book_url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch order book for {symbol}: HTTP {response.status}")
+                    order_book = {'bids': [], 'asks': []}
+                else:
+                    order_book = await response.json()
 
             coin_data = {
                 'coin': symbol,
@@ -131,13 +139,12 @@ class MEXCClient:
                 'order_book': order_book
             }
 
-            # JSON'a kaydet
             try:
                 data = []
                 if os.path.exists(self.data_file):
                     with open(self.data_file, 'r') as f:
                         data = json.load(f)
-                data = [d for d in data if d['coin'] != symbol]  # Eski veriyi güncelle
+                data = [d for d in data if d['coin'] != symbol]
                 data.append(coin_data)
                 with open(self.data_file, 'w') as f:
                     json.dump(data, f)
@@ -150,7 +157,7 @@ class MEXCClient:
                        f"klines_1m={len(klines.get('1m', []))}, klines_5m={len(klines.get('5m', []))}, "
                        f"klines_15m={len(klines.get('15m', []))}, klines_30m={len(klines.get('30m', []))}, "
                        f"klines_60m={len(klines.get('60m', []))}")
-            await asyncio.sleep(2.0)  # Rate limit için
+            await asyncio.sleep(3.0)
             return coin_data
         except Exception as e:
             logger.error(f"Error fetching market data for {symbol}: {e}")
@@ -159,57 +166,57 @@ class MEXCClient:
     async def get_top_coins(self, limit=100):
         logger.debug(f"Fetching top {limit} coins")
         try:
-            markets = await self.exchange.load_markets()
-            usdt_pairs = [s for s in markets if s.endswith('/USDT')]
-            logger.info(f"{len(usdt_pairs)} USDT pairs found: {usdt_pairs[:5]}...")
-            tickers = await self.get_tickers()
-            logger.info(f"Fetched {len(tickers)} tickers")
-            sorted_tickers = sorted(
-                [(s, tickers[s].get('quoteVolume', 0)) for s in usdt_pairs if s in tickers],
-                key=lambda x: x[1], reverse=True
-            )
-            coins = [s for s, _ in sorted_tickers[:limit]]
-            logger.info(f"Fetched {len(coins)} top coins: {coins[:5]}...")
-            if not coins:
-                logger.warning("No valid USDT pairs found")
-                return []
-            return coins
+            session = await self.initialize_session()
+            markets_url = f"{self.base_url}/exchangeInfo"
+            async with session.get(markets_url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch exchange info: HTTP {response.status}")
+                    return []
+                markets = await response.json()
+                usdt_pairs = [s['symbol'] for s in markets['symbols'] if s['symbol'].endswith('USDT')]
+                logger.info(f"{len(usdt_pairs)} USDT pairs found: {usdt_pairs[:5]}...")
+
+            tickers_url = f"{self.base_url}/ticker/24hr"
+            async with session.get(tickers_url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch tickers: HTTP {response.status}")
+                    return []
+                tickers = await response.json()
+                logger.info(f"Fetched {len(tickers)} tickers")
+                sorted_tickers = sorted(
+                    [(t['symbol'], float(t.get('quoteVolume', 0))) for t in tickers if t['symbol'] in usdt_pairs],
+                    key=lambda x: x[1], reverse=True
+                )
+                coins = [f"{s[:len(s)-4]}/USDT" for s, _ in sorted_tickers[:limit]]  # ETHUSDT -> ETH/USDT
+                logger.info(f"Fetched {len(coins)} top coins: {coins[:5]}...")
+                if not coins:
+                    logger.warning("No valid USDT pairs found")
+                    return []
+                return coins
         except Exception as e:
             logger.error(f"Error fetching top coins: {e}")
             return []
 
-    async def get_market_data(self, symbol, timeframes=['1m', '5m', '15m', '30m', '60m']):
-        logger.debug(f"Fetching market data for {symbol} from JSON")
+    async def get_order_book(self, symbol, limit=10):
+        logger.debug(f"Fetching order book for {symbol}")
         try:
-            with open(self.data_file, 'r') as f:
-                market_data = json.load(f)
-            for item in market_data:
-                if item['coin'] == symbol:
-                    data = {
-                        'coin': symbol,
-                        'price': item.get('price', 0),
-                        'volume': item.get('volume', 0),
-                        'klines': {tf: item['klines'].get(tf, []) for tf in timeframes},
-                        'order_book': item.get('order_book', {'bids': [], 'asks': []})
-                    }
-                    logger.info(f"Fetched data for {symbol}: price={data['price']}, "
-                               f"klines_1m={len(data['klines']['1m'])}, klines_5m={len(data['klines']['5m'])}, "
-                               f"klines_15m={len(data['klines']['15m'])}, klines_30m={len(data['klines']['30m'])}, "
-                               f"klines_60m={len(data['klines']['60m'])}")
-                    return data
-            logger.warning(f"No data for {symbol} in {self.data_file}")
-            return None
-        except FileNotFoundError:
-            logger.error(f"File not found: {self.data_file}")
-            return None
+            api_symbol = symbol.replace('/', '')
+            url = f"{self.base_url}/depth?symbol={api_symbol}&limit={limit}"
+            session = await self.initialize_session()
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch order book for {symbol}: HTTP {response.status}")
+                    return {'bids': [], 'asks': []}
+                return await response.json()
         except Exception as e:
-            logger.error(f"Error reading market data for {symbol}: {e}")
-            return None
+            logger.error(f"Error fetching order book for {symbol}: {e}")
+            return {'bids': [], 'asks': []}
 
     async def close(self):
         logger.debug("Closing MEXCClient")
-        await self.exchange.close()
-        logger.info("MEXCClient closed")
+        if self.session:
+            await self.session.close()
+            logger.info("MEXCClient session closed")
 
 def calculate_indicators(klines_1m, klines_5m, klines_15m, klines_30m, klines_60m, order_book=None):
     logger.debug(f"Calculating indicators: klines_1m={len(klines_1m)}, klines_5m={len(klines_5m)}, "
