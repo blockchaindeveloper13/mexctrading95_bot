@@ -2,6 +2,7 @@ import os
 import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.error import BadRequest
 from dotenv import load_dotenv
 from openai import OpenAI
 from aiohttp import web
@@ -21,6 +22,11 @@ class TelegramBot:
         if not self.group_id:
             logger.error("TELEGRAM_GROUP_ID is not set in environment variables")
             raise ValueError("TELEGRAM_GROUP_ID is not set")
+        try:
+            self.group_id = int(self.group_id)  # Ensure group_id is an integer
+        except ValueError:
+            logger.error(f"Invalid TELEGRAM_GROUP_ID format: {self.group_id}")
+            raise ValueError(f"Invalid TELEGRAM_GROUP_ID format: {self.group_id}")
         self.client = OpenAI(
             api_key=os.getenv('DEEPSEEK_API_KEY'),
             base_url="https://api.deepseek.com"
@@ -47,13 +53,17 @@ class TelegramBot:
         await query.answer()
         logger.info(f"Button clicked: {query.data}")
         limit = 100 if query.data == 'top_100' else 300
-        results = await self.analyze_coins(limit)
-        message = self.format_results(results)
-        if self.group_id:
-            await context.bot.send_message(chat_id=self.group_id, text=message)
-        else:
-            logger.error("Cannot send message: group_id is not set")
-            await query.message.reply_text("Error: Group ID is not set")
+        try:
+            results = await self.analyze_coins(limit)
+            message = self.format_results(results)
+            if not message.strip().endswith("TOP_100:\n") and not message.strip().endswith("TOP_300:\n"):
+                await context.bot.send_message(chat_id=self.group_id, text=message)
+            else:
+                logger.warning("No significant analysis results found")
+                await query.message.reply_text("No coins with significant pump/dump probability found.")
+        except Exception as e:
+            logger.error(f"Error in button handler: {e}")
+            await query.message.reply_text(f"Error during analysis: {str(e)}")
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Chat message received: {update.message.text}")
@@ -73,7 +83,10 @@ class TelegramBot:
             with open('analysis.json', 'r') as f:
                 data = json.load(f)
             message = self.format_results(data)
-            await update.message.reply_text(message)
+            if not message.strip().endswith("TOP_100:\n") and not message.strip().endswith("TOP_300:\n"):
+                await update.message.reply_text(message)
+            else:
+                await update.message.reply_text("No significant analysis results found in the stored data.")
         except FileNotFoundError:
             logger.warning("Analysis file not found")
             await update.message.reply_text("No analysis found.")
@@ -82,9 +95,9 @@ class TelegramBot:
         message = f"📊 Günlük Coin Analizi ({data['date']})\n"
         for category in ['top_100', 'top_300']:
             message += f"\n{category.upper()}:\n"
-            for coin in data[category]:
-                if coin['deepseek_analysis']['short_term'].get('pump_probability', 0) >= 70 or \
-                   coin['deepseek_analysis']['short_term'].get('dump_probability', 0) >= 70:
+            for coin in data.get(category, []):
+                if coin.get('deepseek_analysis', {}).get('short_term', {}).get('pump_probability', 0) >= 70 or \
+                   coin.get('deepseek_analysis', {}).get('short_term', {}).get('dump_probability', 0) >= 70:
                     message += f"1. {coin['coin']}\n"
                     message += f"- Kısa Vadeli: Giriş: ${coin['deepseek_analysis']['short_term'].get('entry_price', 0)} | Çıkış: ${coin['deepseek_analysis']['short_term'].get('exit_price', 0)} | Stop Loss: ${coin['deepseek_analysis']['short_term'].get('stop_loss', 0)} | Kaldıraç: {coin['deepseek_analysis']['short_term'].get('leverage', 'N/A')}\n"
                     message += f"- DeepSeek: {json.dumps(coin['deepseek_analysis']['short_term'])}\n"
@@ -111,7 +124,7 @@ class TelegramBot:
                 results['top_100' if limit == 100 else 'top_300'].append(data)
         
         storage.save_analysis(results)
-        await mexc.close()  # MEXC client’ı kapat
+        await mexc.close()
         return results
 
     async def webhook_handler(self, request):
@@ -126,7 +139,6 @@ class TelegramBot:
 
     async def run(self):
         logger.info("Starting webhook server")
-        # Application'ı başlat
         await self.app.initialize()
         await self.app.start()
         self.web_app = web.Application()
@@ -134,13 +146,11 @@ class TelegramBot:
         webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
         logger.info(f"Setting webhook to {webhook_url}")
         await self.app.bot.set_webhook(url=webhook_url)
-        # Web server'ı başlat
         runner = web.AppRunner(self.web_app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
         await site.start()
         logger.info(f"Webhook server running on port {os.getenv('PORT', 8443)}")
-        # Süresiz çalış
         await asyncio.Event().wait()
 
 def main():
