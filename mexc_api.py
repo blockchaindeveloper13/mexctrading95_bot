@@ -38,10 +38,10 @@ class MEXCClient:
             try:
                 klines = {}
                 for tf in timeframes:
-                    # MEXC API v3'e uygun zaman aralığını kullanın
-                    klines[tf] = await self.exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
-                    else:
-                        logger.warning(f"Unsupported timeframe {tf} for symbol {symbol}")
+                    try:
+                        klines[tf] = await self.exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
+                    except Exception as e:
+                        logger.warning(f"Unsupported timeframe {tf} for symbol {symbol}: {e}")
                         klines[tf] = []
                 
                 ticker = await self.exchange.fetch_ticker(symbol)
