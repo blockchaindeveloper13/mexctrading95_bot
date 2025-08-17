@@ -11,6 +11,7 @@ from openai import OpenAI
 from aiohttp import web
 from dotenv import load_dotenv
 from datetime import datetime
+import re
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,7 +29,6 @@ class MEXCClient:
         logger.info(f"{symbol} için piyasa verisi çekiliyor")
         try:
             async with aiohttp.ClientSession() as session:
-                # Kline verisi (1m, 5m, 15m, 30m, 60m)
                 klines = {}
                 for timeframe in ['1m', '5m', '15m', '30m', '60m']:
                     url = f"{self.base_url}/api/v3/klines?symbol={symbol}&interval={timeframe}&limit=100"
@@ -38,15 +38,13 @@ class MEXCClient:
                         else:
                             logger.warning(f"{symbol} için {timeframe} kline verisi alınamadı: {response.status}")
                             klines[timeframe] = []
-                    await asyncio.sleep(1)  # Rate limit için bekleme
+                    await asyncio.sleep(1)
 
-                # Order book verisi
                 order_book_url = f"{self.base_url}/api/v3/depth?symbol={symbol}&limit=10"
                 async with session.get(order_book_url) as order_book_response:
                     order_book = await order_book_response.json() if order_book_response.status == 200 else {}
                 await asyncio.sleep(1)
 
-                # Güncel fiyat
                 ticker_url = f"{self.base_url}/api/v3/ticker/price?symbol={symbol}"
                 async with session.get(ticker_url) as ticker_response:
                     ticker = await ticker_response.json() if ticker_response.status == 200 else {'price': '0.0'}
@@ -102,6 +100,49 @@ class DeepSeekClient:
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
 
+    def parse_deepseek_response(self, text, current_price):
+        """DeepSeek yanıtını parse eder."""
+        try:
+            entry_price = float(re.search(r'Entry Price: (\d+\.?\d*)', text).group(1)) if re.search(r'Entry Price: (\d+\.?\d*)', text) else current_price
+            exit_price = float(re.search(r'Exit Price: (\d+\.?\d*)', text).group(1)) if re.search(r'Exit Price: (\d+\.?\d*)', text) else current_price * 1.02
+            stop_loss = float(re.search(r'Stop Loss: (\d+\.?\d*)', text).group(1)) if re.search(r'Stop Loss: (\d+\.?\d*)', text) else current_price * 0.98
+            leverage = re.search(r'Leverage: ([0-9x]+)', text).group(1) if re.search(r'Leverage: ([0-9x]+)', text) else '1x'
+            pump_prob = int(re.search(r'Pump Probability: (\d+)%', text).group(1)) if re.search(r'Pump Probability: (\d+)%', text) else 50
+            dump_prob = int(re.search(r'Dump Probability: (\d+)%', text).group(1)) if re.search(r'Dump Probability: (\d+)%', text) else 50
+            trend = re.search(r'Trend: (\w+)', text).group(1) if re.search(r'Trend: (\w+)', text) else 'Neutral'
+            support = float(re.search(r'Support Level: (\d+\.?\d*)', text).group(1)) if re.search(r'Support Level: (\d+\.?\d*)', text) else current_price * 0.95
+            resistance = float(re.search(r'Resistance Level: (\d+\.?\d*)', text).group(1)) if re.search(r'Resistance Level: (\d+\.?\d*)', text) else current_price * 1.05
+            risk_reward = float(re.search(r'Risk/Reward Ratio: (\d+\.?\d*)', text).group(1)) if re.search(r'Risk/Reward Ratio: (\d+\.?\d*)', text) else (exit_price - entry_price) / (entry_price - stop_loss) if entry_price > stop_loss else 1.0
+            fundamental = re.search(r'Fundamental Analysis: (.+?)(?:\n|$)', text).group(1)[:500] if re.search(r'Fundamental Analysis: (.+?)(?:\n|$)', text) else text[:500]
+            return {
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'stop_loss': stop_loss,
+                'leverage': leverage,
+                'pump_probability': pump_prob,
+                'dump_probability': dump_prob,
+                'trend': trend,
+                'support_level': support,
+                'resistance_level': resistance,
+                'risk_reward_ratio': risk_reward,
+                'fundamental_analysis': fundamental
+            }
+        except Exception as e:
+            logger.error(f"DeepSeek yanıtı parse edilirken hata: {e}")
+            return {
+                'entry_price': current_price,
+                'exit_price': current_price * 1.02,
+                'stop_loss': current_price * 0.98,
+                'leverage': '1x',
+                'pump_probability': 50,
+                'dump_probability': 50,
+                'trend': 'Neutral',
+                'support_level': current_price * 0.95,
+                'resistance_level': current_price * 1.05,
+                'risk_reward_ratio': 1.0,
+                'fundamental_analysis': 'Parse başarısız'
+            }
+
     def analyze_coin(self, symbol, data, trade_type):
         """DeepSeek API ile coin analizi yapar."""
         logger.info(f"{symbol} için {trade_type} analizi yapılıyor")
@@ -109,47 +150,59 @@ class DeepSeekClient:
             prompt = f"""
             Analyze {symbol} for {trade_type} trading strategy:
             - Current Price: {data['price']} USDT
-            - Volume Change (1m): {data.get('indicators', {}).get('volume_change_1m', 'N/A')}%
-            - RSI (1m): {data.get('indicators', {}).get('rsi_1m', 'N/A')}
-            - MACD (1m): {data.get('indicators', {}).get('macd_1m', 'N/A')}
+            - Volume Changes: 
+              - 1m: {data.get('indicators', {}).get('volume_change_1m', 'N/A')}%
+              - 5m: {data.get('indicators', {}).get('volume_change_5m', 'N/A')}%
+              - 15m: {data.get('indicators', {}).get('volume_change_15m', 'N/A')}%
+              - 30m: {data.get('indicators', {}).get('volume_change_30m', 'N/A')}%
+              - 60m: {data.get('indicators', {}).get('volume_change_60m', 'N/A')}%
+            - RSI: 
+              - 1m: {data.get('indicators', {}).get('rsi_1m', 'N/A')}
+              - 5m: {data.get('indicators', {}).get('rsi_5m', 'N/A')}
+              - 15m: {data.get('indicators', {}).get('rsi_15m', 'N/A')}
+              - 30m: {data.get('indicators', {}).get('rsi_30m', 'N/A')}
+              - 60m: {data.get('indicators', {}).get('rsi_60m', 'N/A')}
+            - MACD: 
+              - 1m: {data.get('indicators', {}).get('macd_1m', 'N/A')}
+              - 5m: {data.get('indicators', {}).get('macd_5m', 'N/A')}
+              - 15m: {data.get('indicators', {}).get('macd_15m', 'N/A')}
+              - 30m: {data.get('indicators', {}).get('macd_30m', 'N/A')}
+              - 60m: {data.get('indicators', {}).get('macd_60m', 'N/A')}
             - Bid/Ask Ratio: {data.get('indicators', {}).get('bid_ask_ratio', 'N/A')}
             Provide:
-            - Entry Price
-            - Exit Price
-            - Stop Loss
-            - Leverage
-            - Pump Probability (%)
-            - Dump Probability (%)
-            - Fundamental Analysis (short summary, max 200 characters)
+            - Entry Price: <specific price in USDT>
+            - Exit Price: <specific price in USDT>
+            - Stop Loss: <specific price in USDT>
+            - Leverage: <e.g., 1x for spot, 3x for futures>
+            - Pump Probability: <%> (based on RSI, volume, and bid/ask ratio)
+            - Dump Probability: <%> (based on RSI, volume, and bid/ask ratio)
+            - Trend: <Bullish/Bearish/Neutral>
+            - Support Level: <specific price in USDT>
+            - Resistance Level: <specific price in USDT>
+            - Risk/Reward Ratio: <e.g., 2.0>
+            - Fundamental Analysis: <detailed summary, max 500 characters, include volume trends, market sentiment, and buying/selling pressure>
             """
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=500
+                max_tokens=1000
             )
             analysis_text = response.choices[0].message.content
-            # Basit parse (DeepSeek yanıtına göre özelleştirilebilir)
-            return {
-                'short_term': {
-                    'entry_price': data['price'],
-                    'exit_price': data['price'] * 1.02,  # %2 kar hedefi
-                    'stop_loss': data['price'] * 0.98,   # %2 zarar durdur
-                    'leverage': '1x' if trade_type == 'spot' else '3x',
-                    'pump_probability': 50,
-                    'dump_probability': 50,
-                    'fundamental_analysis': analysis_text[:200]
-                }
-            }
+            return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
         except Exception as e:
             logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {e}")
             return {
                 'short_term': {
-                    'entry_price': 0.0,
-                    'exit_price': 0.0,
-                    'stop_loss': 0.0,
-                    'leverage': 'N/A',
-                    'pump_probability': 0,
-                    'dump_probability': 0,
+                    'entry_price': data['price'],
+                    'exit_price': data['price'] * 1.02,
+                    'stop_loss': data['price'] * 0.98,
+                    'leverage': '1x' if trade_type == 'spot' else '3x',
+                    'pump_probability': 50,
+                    'dump_probability': 50,
+                    'trend': 'Neutral',
+                    'support_level': data['price'] * 0.95,
+                    'resistance_level': data['price'] * 1.05,
+                    'risk_reward_ratio': 1.0,
                     'fundamental_analysis': 'Analiz başarısız'
                 }
             }
@@ -228,6 +281,67 @@ def calculate_indicators(kline_1m, kline_5m, kline_15m, kline_30m, kline_60m, or
             'bid_ask_ratio': 0.0
         }
 
+def explain_indicators(indicators):
+    """Göstergeleri anlaşılır şekilde açıklar."""
+    explanations = []
+    for tf in ['1m', '5m', '15m', '30m', '60m']:
+        volume_change = indicators.get(f'volume_change_{tf}', 0.0)
+        rsi = indicators.get(f'rsi_{tf}', 0.0)
+        macd = indicators.get(f'macd_{tf}', 0.0)
+        
+        # Hacim açıklaması
+        if isinstance(volume_change, (int, float)):
+            if volume_change > 100:
+                vol_explain = f"{tf}: Hacimde %{volume_change:.2f} artış, güçlü alım/satım hareketi olabilir."
+            elif volume_change > 0:
+                vol_explain = f"{tf}: Hacimde %{volume_change:.2f} artış, ilgi artıyor."
+            elif volume_change < -50:
+                vol_explain = f"{tf}: Hacimde %{volume_change:.2f} düşüş, piyasada sakinlik var."
+            else:
+                vol_explain = f"{tf}: Hacimde %{volume_change:.2f} değişim, stabil hareket."
+        else:
+            vol_explain = f"{tf}: Hacim verisi yok."
+        explanations.append(vol_explain)
+
+        # RSI açıklaması
+        if isinstance(rsi, (int, float)):
+            if rsi > 70:
+                rsi_explain = f"{tf}: RSI {rsi:.2f}, aşırı alım bölgesinde, düşüş riski olabilir."
+            elif rsi < 30:
+                rsi_explain = f"{tf}: RSI {rsi:.2f}, aşırı satım bölgesinde, alım fırsatı olabilir."
+            else:
+                rsi_explain = f"{tf}: RSI {rsi:.2f}, nötr bölgede, net bir sinyal yok."
+        else:
+            rsi_explain = f"{tf}: RSI verisi yok."
+        explanations.append(rsi_explain)
+
+        # MACD açıklaması
+        if isinstance(macd, (int, float)):
+            if macd > 0:
+                macd_explain = f"{tf}: MACD {macd:.2f}, yükseliş eğilimi sinyali."
+            elif macd < 0:
+                macd_explain = f"{tf}: MACD {macd:.2f}, düşüş eğilimi sinyali."
+            else:
+                macd_explain = f"{tf}: MACD {macd:.2f}, nötr sinyal."
+        else:
+            macd_explain = f"{tf}: MACD verisi yok."
+        explanations.append(macd_explain)
+
+    # Bid/Ask oranı açıklaması
+    bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
+    if isinstance(bid_ask_ratio, (int, float)):
+        if bid_ask_ratio > 1.5:
+            bid_ask_explain = f"Bid/Ask Oranı: {bid_ask_ratio:.2f}, güçlü alım baskısı var."
+        elif bid_ask_ratio < 0.7:
+            bid_ask_explain = f"Bid/Ask Oranı: {bid_ask_ratio:.2f}, satış baskısı hakim."
+        else:
+            bid_ask_explain = f"Bid/Ask Oranı: {bid_ask_ratio:.2f}, dengeli alım/satım."
+    else:
+        bid_ask_explain = "Bid/Ask Oranı: Veri yok."
+    explanations.append(bid_ask_explain)
+
+    return "\n".join(explanations)
+
 class TelegramBot:
     def __init__(self):
         """Telegram botunu başlatır."""
@@ -265,7 +379,7 @@ class TelegramBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "Analiz için butonları kullanabilir veya /analyze <symbol> komutuyla coin analizi yapabilirsiniz (örn. /analyze BTCUSDT).",
+            "Analiz için butonları kullanabilir veya /analyze <symbol> [trade_type] komutuyla coin analizi yapabilirsiniz (örn. /analyze BTCUSDT spot).",
             reply_markup=reply_markup
         )
 
@@ -275,9 +389,13 @@ class TelegramBot:
         try:
             args = update.message.text.split()
             if len(args) < 2:
-                await update.message.reply_text("Lütfen bir sembol girin. Örnek: /analyze BTCUSDT")
+                await update.message.reply_text("Lütfen bir sembol girin. Örnek: /analyze BTCUSDT spot")
                 return
             symbol = args[1].upper()
+            trade_type = args[2].lower() if len(args) > 2 else 'spot'
+            if trade_type not in ['spot', 'futures']:
+                await update.message.reply_text("Trade tipi 'spot' veya 'futures' olmalı. Örnek: /analyze BTCUSDT spot")
+                return
             if not symbol.endswith('USDT'):
                 await update.message.reply_text("Sembol USDT çifti olmalı. Örnek: /analyze BTCUSDT")
                 return
@@ -287,8 +405,8 @@ class TelegramBot:
                 await update.message.reply_text(f"Hata: {symbol} geçersiz bir işlem çifti.")
                 return
 
-            await update.message.reply_text(f"{symbol} için analiz yapılıyor...")
-            data = await self.process_coin(symbol, mexc, 'spot', update.effective_chat.id)
+            await update.message.reply_text(f"{symbol} için {trade_type} analizi yapılıyor...")
+            data = await self.process_coin(symbol, mexc, trade_type, update.effective_chat.id)
             await mexc.close()
             if not data:
                 await update.message.reply_text(f"{symbol} için analiz yapılamadı.")
@@ -343,7 +461,7 @@ class TelegramBot:
         try:
             response = await asyncio.wait_for(
                 asyncio.to_thread(
-                    self.app.bot.client.chat.completions.create,
+                    self.client.chat.completions.create,
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": update.message.text}]
                 ),
@@ -363,7 +481,8 @@ class TelegramBot:
             messages = []
             for key, coin_data in data.items():
                 if isinstance(coin_data, dict) and 'coin' in coin_data:
-                    message = self.format_results(coin_data, 'spot', coin_data['coin'])
+                    trade_type = key.split('_')[-1]
+                    message = self.format_results(coin_data, trade_type, coin_data['coin'])
                     messages.append(message)
             if messages:
                 await update.message.reply_text("\n\n".join(messages))
@@ -384,24 +503,32 @@ class TelegramBot:
             volume_changes[tf] = f"{value:.2f}" if isinstance(value, (int, float)) else "N/A"
         bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
         bid_ask_ratio_str = f"{bid_ask_ratio:.2f}" if isinstance(bid_ask_ratio, (int, float)) else "N/A"
-        rsi_1m = indicators.get('rsi_1m', 0.0)
-        macd_1m = indicators.get('macd_1m', 0.0)
+        rsi_values = {tf: indicators.get(f'rsi_{tf}', 0.0) for tf in ['1m', '5m', '15m', '30m', '60m']}
+        macd_values = {tf: indicators.get(f'macd_{tf}', 0.0) for tf in ['1m', '5m', '15m', '30m', '60m']}
         try:
             message = (
                 f"📊 {symbol} {trade_type.upper()} Analizi ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                f"- Kısa Vadeli: Giriş: ${analysis.get('entry_price', 0):.2f} | "
-                f"Çıkış: ${analysis.get('exit_price', 0):.2f} | "
-                f"Stop Loss: ${analysis.get('stop_loss', 0):.2f} | "
-                f"Kaldıraç: {analysis.get('leverage', 'N/A')}\n"
-                f"- Pump Olasılığı: {analysis.get('pump_probability', 0)}% | "
-                f"Dump Olasılığı: {analysis.get('dump_probability', 0)}%\n"
+                f"- Kısa Vadeli:\n"
+                f"  - Giriş: ${analysis.get('entry_price', 0):.2f}\n"
+                f"  - Çıkış: ${analysis.get('exit_price', 0):.2f}\n"
+                f"  - Stop Loss: ${analysis.get('stop_loss', 0):.2f}\n"
+                f"  - Kaldıraç: {analysis.get('leverage', 'N/A')}\n"
+                f"- Trend: {analysis.get('trend', 'Neutral')}\n"
+                f"- Pump Olasılığı: {analysis.get('pump_probability', 0)}%\n"
+                f"- Dump Olasılığı: {analysis.get('dump_probability', 0)}%\n"
+                f"- Destek Seviyesi: ${analysis.get('support_level', 0):.2f}\n"
+                f"- Direnç Seviyesi: ${analysis.get('resistance_level', 0):.2f}\n"
+                f"- Risk/Ödül Oranı: {analysis.get('risk_reward_ratio', 0):.2f}\n"
                 f"- Temel Analiz: {analysis.get('fundamental_analysis', 'Veri yok')}\n"
-                f"- Hacim Değişimleri: 1m: {volume_changes['1m']}% | "
-                f"5m: {volume_changes['5m']}% | 15m: {volume_changes['15m']}% | "
-                f"30m: {volume_changes['30m']}% | 60m: {volume_changes['60m']}% \n"
-                f"- Bid/Ask Oranı: {bid_ask_ratio_str}\n"
-                f"- RSI (1m): {rsi_1m:.2f}\n"
-                f"- MACD (1m): {macd_1m:.2f}"
+                f"- Göstergeler:\n"
+                f"  - Hacim Değişimleri: 1m: {volume_changes['1m']}% | 5m: {volume_changes['5m']}% | "
+                f"15m: {volume_changes['15m']}% | 30m: {volume_changes['30m']}% | 60m: {volume_changes['60m']}%\n"
+                f"  - Bid/Ask Oranı: {bid_ask_ratio_str}\n"
+                f"  - RSI: 1m: {rsi_values['1m']:.2f} | 5m: {rsi_values['5m']:.2f} | "
+                f"15m: {rsi_values['15m']:.2f} | 30m: {rsi_values['30m']:.2f} | 60m: {rsi_values['60m']:.2f}\n"
+                f"  - MACD: 1m: {macd_values['1m']:.2f} | 5m: {macd_values['5m']:.2f} | "
+                f"15m: {macd_values['15m']:.2f} | 30m: {macd_values['30m']:.2f} | 60m: {macd_values['60m']:.2f}\n"
+                f"- Gösterge Açıklamaları:\n{explain_indicators(indicators)}"
             )
             return message
         except Exception as e:
@@ -456,7 +583,7 @@ class TelegramBot:
             coin_data = await self.process_coin(symbol, mexc, trade_type, chat_id)
             if coin_data:
                 results[f'top_{limit}_{trade_type}'].append(coin_data)
-            await asyncio.sleep(2)  # Rate limit için bekleme
+            await asyncio.sleep(2)
         await mexc.close()
         return results
 
