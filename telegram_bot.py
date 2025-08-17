@@ -411,12 +411,21 @@ class TelegramBot:
         logger.debug("Initializing TelegramBot")
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
         self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
-        self.app = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
-        self.app.add_handler(CommandHandler("start", self.start))
-        self.app.add_handler(CallbackQueryHandler(self.button))
-        self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
-        self.web_app = None
+        try:
+            self.app = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+            logger.debug("Application initialized successfully")
+            self.app.add_handler(CommandHandler("start", self.start))
+            self.app.add_handler(CallbackQueryHandler(self.button))
+            self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
+            self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
+            self.web_app = None
+            # job_queue kontrolü
+            if self.app.job_queue is None:
+                logger.error("Application.job_queue is None")
+                raise ValueError("Job queue is not initialized. Check Application configuration.")
+        except Exception as e:
+            logger.error(f"Error initializing Application: {e}")
+            raise
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.debug(f"Start command from chat_id={update.effective_chat.id}")
@@ -438,18 +447,23 @@ class TelegramBot:
             limit = int(parts[1])
             trade_type = parts[2]
             await query.message.reply_text(f"{trade_type.upper()} analizi yapılıyor (Top {limit})...")
-            context.job_queue.run_once(
-                self.analyze_and_send,
-                0,
-                data={'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type},
-                chat_id=self.group_id
-            )
+            if context.job_queue is None:
+                logger.error("context.job_queue is None, running analyze_and_send directly")
+                await self.analyze_and_send(context, {'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type})
+            else:
+                context.job_queue.run_once(
+                    self.analyze_and_send,
+                    0,
+                    data={'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type},
+                    chat_id=self.group_id
+                )
         except Exception as e:
             logger.error(f"Error in button handler: {e}")
-            await query.message.reply_text(f"Error: {str(e)}")
+            await query.message.reply_text(f"Hata: {str(e)}")
 
-    async def analyze_and_send(self, context: ContextTypes.DEFAULT_TYPE):
-        data = context.job.data
+    async def analyze_and_send(self, context: ContextTypes.DEFAULT_TYPE, data=None):
+        if data is None:
+            data = context.job.data
         chat_id = data['chat_id']
         limit = data['limit']
         trade_type = data['trade_type']
@@ -457,11 +471,12 @@ class TelegramBot:
         try:
             results = await self.analyze_coins(limit, trade_type, chat_id)
             if not results.get(f'top_{limit}_{trade_type}'):
-                await context.bot.send_message(chat_id=chat_id, text=f"No significant results for Top {limit} {trade_type} analysis.")
+                await context.bot.send_message(chat_id=chat_id, text=f"Top {limit} {trade_type} analizi için anlamlı sonuç bulunamadı.")
             logger.info(f"Analysis completed for Top {limit} {trade_type}")
         except Exception as e:
             logger.error(f"Error in analyze_and_send: {e}")
-            await context.bot.send_message(chat_id=chat_id, text=f"Error during {trade_type} analysis: {str(e)}")
+            await context.bot.send_message(chat_id=chat_id, text=f"{trade_type} analizi sırasında hata: {str(e)}")
+
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.debug(f"Chat message: {update.message.text}")
