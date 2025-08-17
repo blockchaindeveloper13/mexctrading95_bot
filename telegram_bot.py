@@ -40,7 +40,7 @@ class TelegramBot:
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.info("Start command received")
+        logger.info(f"Start command received from chat_id={update.effective_chat.id}")
         keyboard = [
             [InlineKeyboardButton("Top 100 Spot Analizi", callback_data='top_100_spot')],
             [InlineKeyboardButton("Top 300 Spot Analizi", callback_data='top_300_spot')],
@@ -53,7 +53,7 @@ class TelegramBot:
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-        logger.info(f"Button clicked: {query.data}")
+        logger.info(f"Button clicked: {query.data} from chat_id={query.message.chat_id}")
         try:
             if not context.job_queue:
                 logger.error("JobQueue is not available. Ensure python-telegram-bot[job-queue] is installed.")
@@ -94,15 +94,17 @@ class TelegramBot:
             )
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.info(f"Chat message received: {update.message.text}")
+        logger.info(f"Chat message received: {update.message.text} from chat_id={update.effective_chat.id}")
         try:
             # DeepSeek API çağrısına 20 saniye zaman aşımı ekle
-            async with asyncio.timeout(20):
-                response = await asyncio.to_thread(
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
                     self.client.chat.completions.create,
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": update.message.text}]
-                )
+                ),
+                timeout=20
+            )
             reply_text = response.choices[0].message.content
             await update.message.reply_text(reply_text)
             logger.info(f"DeepSeek response sent for message: {update.message.text[:50]}...")
@@ -216,12 +218,21 @@ class TelegramBot:
     async def webhook_handler(self, request):
         logger.info("Webhook request received")
         try:
-            update = Update.de_json(await request.json(), self.app.bot)
+            raw_data = await request.json()
+            logger.debug(f"Raw webhook data: {raw_data}")
+            update = Update.de_json(raw_data, self.app.bot)
+            if not update:
+                logger.warning("Failed to parse webhook update")
+                return web.Response(text="ERROR: Invalid update", status=400)
+            logger.info(f"Processing update: message={getattr(update.message, 'text', 'N/A')}, chat_id={getattr(update.effective_chat, 'id', 'N/A')}")
             await self.app.process_update(update)
             return web.Response(text="OK")
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding webhook JSON: {e}")
+            return web.Response(text="ERROR: Invalid JSON", status=400)
         except Exception as e:
             logger.error(f"Error in webhook handler: {e}")
-            return web.Response(text="ERROR", status=500)
+            return web.Response(text=f"ERROR: {str(e)}", status=500)
 
     async def run(self):
         logger.info("Starting webhook server")
