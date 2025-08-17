@@ -47,40 +47,44 @@ class MEXCClient:
             logger.error(f"Error fetching tickers: {e}")
             return []
 
-async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
-    logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries})")
-    try:
-        # CCXT için zaman aralığı dönüşümü
-        tf_mapping = {
-            '1m': '1m',
-            '5m': '5m',
-            '15m': '15m',
-            '30m': '30m',
-            '60m': '1h'  # MEXC API'si 60m yerine 1h kullanıyor
-        }
-        ccxt_timeframe = tf_mapping.get(timeframe)
-        if not ccxt_timeframe:
-            logger.error(f"Invalid timeframe for {symbol}: {timeframe}")
+    async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
+        logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries})")
+        if not isinstance(timeframe, str) or timeframe not in ['1m', '5m', '15m', '30m', '60m']:
+            logger.error(f"Invalid or None timeframe for {symbol}: {timeframe}")
             raise ValueError(f"Invalid timeframe: {timeframe}")
+        try:
+            # CCXT için zaman aralığı dönüşümü
+            tf_mapping = {
+                '1m': '1m',
+                '5m': '5m',
+                '15m': '15m',
+                '30m': '30m',
+                '60m': '1h'  # MEXC API'si 60m yerine 1h kullanıyor
+            }
+            ccxt_timeframe = tf_mapping.get(timeframe)
+            if not ccxt_timeframe:
+                logger.error(f"Invalid timeframe mapping for {symbol}: {timeframe}")
+                raise ValueError(f"Invalid timeframe mapping: {timeframe}")
 
-        for attempt in range(retries):
-            try:
-                klines = await self.exchange.fetch_ohlcv(symbol, ccxt_timeframe, limit=limit)
-                if klines:
-                    logger.debug(f"Fetched {len(klines)} kline entries for {symbol} ({timeframe})")
-                    return klines
-                logger.warning(f"No kline data for {symbol} ({timeframe}) on attempt {attempt + 1}")
-                await asyncio.sleep(delay * (attempt + 1))
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1} failed for {symbol} ({timeframe}): {e}")
-                if attempt == retries - 1:
-                    logger.error(f"Failed to fetch {timeframe} kline for {symbol} after {retries} attempts")
-                    return []
-                await asyncio.sleep(delay * (attempt + 1))
-        return []
-    except Exception as e:
-        logger.error(f"Error fetching {timeframe} kline for {symbol}: {e}")
-        return []
+            for attempt in range(retries):
+                try:
+                    logger.debug(f"Attempting to fetch {timeframe} kline for {symbol}, attempt {attempt + 1}")
+                    klines = await self.exchange.fetch_ohlcv(symbol, ccxt_timeframe, limit=limit)
+                    if klines:
+                        logger.debug(f"Fetched {len(klines)} kline entries for {symbol} ({timeframe})")
+                        return klines
+                    logger.warning(f"No kline data for {symbol} ({timeframe}) on attempt {attempt + 1}")
+                    await asyncio.sleep(delay * (attempt + 1))
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt + 1} failed for {symbol} ({timeframe}): {e}")
+                    if attempt == retries - 1:
+                        logger.error(f"Failed to fetch {timeframe} kline for {symbol} after {retries} attempts")
+                        return []
+                    await asyncio.sleep(delay * (attempt + 1))
+            return []
+        except Exception as e:
+            logger.error(f"Error fetching {timeframe} kline for {symbol}: {e}")
+            return []
 
     async def get_order_book(self, symbol, limit=10):
         logger.debug(f"Fetching order book for {symbol}")
@@ -93,6 +97,7 @@ async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
     async def fetch_and_save_market_data(self, symbol):
         logger.info(f"Fetching market data for {symbol}")
         timeframes = ['1m', '5m', '15m', '30m', '60m']
+        logger.debug(f"Timeframes to fetch: {timeframes}")
         if not timeframes or any(tf is None or tf not in ['1m', '5m', '15m', '30m', '60m'] for tf in timeframes):
             logger.error(f"Invalid timeframes: {timeframes}")
             raise ValueError(f"Invalid timeframes: {timeframes}")
@@ -105,12 +110,15 @@ async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
             klines = {}
             for tf in timeframes:
                 logger.debug(f"Fetching {tf} kline for {symbol}")
-                klines[tf] = await self.get_kline(symbol, tf, limit=100, retries=3, delay=2)
-                if not klines[tf]:
-                    logger.warning(f"No {tf} kline data for {symbol}, skipping")
-                    return None
-            if not all(klines.get(tf) for tf in timeframes):
-                logger.warning(f"Incomplete kline data for {symbol}, skipping")
+                kline_data = await self.get_kline(symbol, tf, limit=100, retries=3, delay=2)
+                if not kline_data:
+                    logger.warning(f"No {tf} kline data for {symbol}, using empty list")
+                    kline_data = []
+                klines[tf] = kline_data
+
+            # Eğer tüm timeframe'ler boşsa, veriyi kaydetme
+            if not any(klines[tf] for tf in timeframes):
+                logger.warning(f"All kline data empty for {symbol}, skipping")
                 return None
 
             order_book = await self.get_order_book(symbol, limit=10)
@@ -207,8 +215,8 @@ def calculate_indicators(klines_1m, klines_5m, klines_15m, klines_30m, klines_60
     logger.debug(f"Calculating indicators: klines_1m={len(klines_1m)}, klines_5m={len(klines_5m)}, "
                 f"klines_15m={len(klines_15m)}, klines_30m={len(klines_30m)}, klines_60m={len(klines_60m)}")
     try:
-        if not all([klines_1m, klines_5m, klines_15m, klines_30m, klines_60m]):
-            logger.warning("Empty klines data provided")
+        if not any([klines_1m, klines_5m, klines_15m, klines_30m, klines_60m]):
+            logger.warning("All klines data empty")
             return None
 
         # DataFrame'leri oluştur
@@ -469,13 +477,14 @@ class TelegramBot:
         try:
             storage = Storage()
             data = storage.load_analysis()
-            message_spot = self.format_results(data, 'spot')
-            message_futures = self.format_results(data, 'futures')
             messages = []
-            if not message_spot.strip().endswith("TOP_100_SPOT:\n") and not message_spot.strip().endswith("TOP_300_SPOT:\n"):
-                messages.append(message_spot)
-            if not message_futures.strip().endswith("TOP_100_FUTURES:\n") and not message_futures.strip().endswith("TOP_300_FUTURES:\n"):
-                messages.append(message_futures)
+            for trade_type in ['spot', 'futures']:
+                for limit in [100, 300]:
+                    key = f'top_{limit}_{trade_type}'
+                    if key in data and data[key]:
+                        for coin_data in data[key]:
+                            message = self.format_results(coin_data, trade_type, coin_data['coin'])
+                            messages.append(message)
             if messages:
                 await update.message.reply_text("\n\n".join(messages))
             else:
@@ -511,23 +520,25 @@ class TelegramBot:
         try:
             # Veriyi çek ve JSON'a kaydet
             data = await mexc.fetch_and_save_market_data(symbol)
-            if not data or not all(data['klines'].get(tf) for tf in ['1m', '5m', '15m', '30m', '60m']):
+            if not data:
                 logger.warning(f"No valid market data for {symbol} ({trade_type})")
+                await self.app.bot.send_message(chat_id=chat_id, text=f"No valid market data for {symbol}")
                 return None
 
             # Göstergeleri hesapla
             data['indicators'] = calculate_indicators(
-                data['klines']['1m'], data['klines']['5m'], data['klines']['15m'],
-                data['klines']['30m'], data['klines']['60m'], data.get('order_book')
+                data['klines'].get('1m', []), data['klines'].get('5m', []), data['klines'].get('15m', []),
+                data['klines'].get('30m', []), data['klines'].get('60m', []), data.get('order_book')
             )
             if not data['indicators']:
                 logger.warning(f"No indicators for {symbol} ({trade_type})")
+                await self.app.bot.send_message(chat_id=chat_id, text=f"No indicators calculated for {symbol}")
                 return None
 
             # DeepSeek analizi yap
             data['deepseek_analysis'] = deepseek.analyze_coin(data, trade_type)
             logger.info(f"Processed {symbol} ({trade_type}): price={data.get('price')}, "
-                       f"klines_60m={len(data['klines']['60m'])}")
+                       f"klines_60m={len(data['klines'].get('60m', []))}")
 
             # Telegram'a gönder
             message = self.format_results(data, trade_type, symbol)
