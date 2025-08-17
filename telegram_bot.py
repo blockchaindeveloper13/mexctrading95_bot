@@ -5,6 +5,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from dotenv import load_dotenv
 from openai import OpenAI
 from aiohttp import web
+import asyncio
 import logging
 
 # Loglama ayarları
@@ -92,11 +93,31 @@ class TelegramBot:
             logger.error(f"Error in webhook handler: {e}")
             return web.Response(text="ERROR", status=500)
 
-    def run(self):
+    async def run(self):
         logger.info("Starting webhook server")
+        # Application'ı başlat
+        await self.app.initialize()
+        await self.app.start()
         self.web_app = web.Application()
         self.web_app.router.add_post('/webhook', self.webhook_handler)
         webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
         logger.info(f"Setting webhook to {webhook_url}")
-        self.app.bot.set_webhook(url=webhook_url)
-        web.run_app(self.web_app, host='0.0.0.0', port=int(os.getenv('PORT', 8443)))
+        await self.app.bot.set_webhook(url=webhook_url)
+        # Web server'ı başlat
+        runner = web.AppRunner(self.web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
+        await site.start()
+        logger.info(f"Webhook server running on port {os.getenv('PORT', 8443)}")
+        # Süresiz çalış
+        await asyncio.Event().wait()
+
+def main():
+    from mexc_api import MEXCClient
+    from indicators import calculate_indicators
+    from deepseek import DeepSeekClient
+    bot = TelegramBot(lambda limit: analyze_coins(limit))
+    asyncio.run(bot.run())
+
+if __name__ == "__main__":
+    main()
