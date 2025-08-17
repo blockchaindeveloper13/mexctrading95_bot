@@ -16,30 +16,30 @@ class MEXCClient:
         self.exchange = ccxt.mexc3({
             'apiKey': os.getenv('MEXC_API_KEY'),
             'secret': os.getenv('MEXC_API_SECRET'),
-            'enableRateLimit': True
+            'enableRateLimit': True,
+            'options': {
+                'defaultTimeframe': '60m',  # MEXC API v3 için doğru format
+                'timeframes': {
+                    '1m': '1m',
+                    '5m': '5m',
+                    '15m': '15m',
+                    '30m': '30m',
+                    '1h': '60m',  # 1 saat = 60 dakika
+                    '4h': '4h',
+                    '1d': '1d',
+                }
+            }
         })
         self.data_file = os.getenv('MARKET_DATA_FILE', 'market_data.json')
-        self.supported_timeframes = {
-            '1m': '1 minute',
-            '5m': '5 minutes',
-            '15m': '15 minutes',
-            '30m': '30 minutes',
-            '60m': '1 hour',
-            '4h': '4 hours',
-            '1d': '1 day',
-            '1M': '1 month'
-        }
 
-    async def fetch_and_save_market_data(self, symbols, timeframes=['60m', '4h']):
-        """MEXC'ten veri çek ve market_data.json'a kaydet"""
+    async def fetch_and_save_market_data(self, symbols, timeframes=['60m', '4h']):  # '1h' yerine '60m' kullanın
         market_data = []
         for symbol in symbols:
             try:
-                # Desteklenen zaman dilimleri için veri çek
                 klines = {}
                 for tf in timeframes:
-                    if tf in self.supported_timeframes:
-                        klines[tf] = await self.exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
+                    # MEXC API v3'e uygun zaman aralığını kullanın
+                    klines[tf] = await self.exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
                     else:
                         logger.warning(f"Unsupported timeframe {tf} for symbol {symbol}")
                         klines[tf] = []
