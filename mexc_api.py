@@ -11,7 +11,7 @@ load_dotenv()
 
 class MEXCClient:
     def __init__(self):
-        self.exchange = ccxt.mexc({
+        self.exchange = ccxt.mexc3({
             'apiKey': os.getenv('MEXC_API_KEY'),
             'secret': os.getenv('MEXC_API_SECRET'),
             'enableRateLimit': True
@@ -21,10 +21,9 @@ class MEXCClient:
         try:
             markets = await self.exchange.load_markets()
             tickers = await self.exchange.fetch_tickers()
-            # USDT çiftlerini seç ve hacme göre sırala
             usdt_pairs = [
                 symbol for symbol, market in markets.items()
-                if symbol.endswith('/USDT') and market.get('active', False)
+                if symbol.endswith('/USDT') and market.get('active', False) and market.get('spot', True)
             ]
             sorted_tickers = sorted(
                 [(symbol, tickers[symbol]['quoteVolume']) for symbol in usdt_pairs if symbol in tickers],
@@ -38,11 +37,9 @@ class MEXCClient:
 
     async def get_market_data(self, symbol):
         try:
-            # Klines verisi (1h ve 4h)
             klines_1h = await self.exchange.fetch_ohlcv(symbol, '1h', limit=100)
             klines_4h = await self.exchange.fetch_ohlcv(symbol, '4h', limit=100)
             ticker = await self.exchange.fetch_ticker(symbol)
-            # Order book verisi
             order_book = await self.exchange.fetch_order_book(symbol, limit=10)
             return {
                 'coin': symbol,
