@@ -5,8 +5,11 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from dotenv import load_dotenv
 from openai import OpenAI
 from aiohttp import web
-import ssl
 import logging
+
+# Loglama ayarları
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -19,15 +22,15 @@ class TelegramBot:
             base_url="https://api.deepseek.com"
         )
         self.app = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
-        self.web_app = None  # aiohttp web uygulaması
+        self.web_app = None
 
-        # Handlers
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CallbackQueryHandler(self.button))
         self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
         self.app.add_handler(MessageHandler(Filters.text & ~Filters.command, self.chat))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.info("Start command received")
         keyboard = [
             [InlineKeyboardButton("Top 100 Analiz Yap", callback_data='top_100')],
             [InlineKeyboardButton("Top 300 Analiz Yap", callback_data='top_300')]
@@ -38,12 +41,14 @@ class TelegramBot:
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
+        logger.info(f"Button clicked: {query.data}")
         limit = 100 if query.data == 'top_100' else 300
         results = self.analyze_callback(limit)
         message = self.format_results(results)
         await context.bot.send_message(chat_id=self.group_id, text=message)
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.info(f"Chat message received: {update.message.text}")
         try:
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
@@ -51,15 +56,18 @@ class TelegramBot:
             )
             await update.message.reply_text(response.choices[0].message.content)
         except Exception as e:
+            logger.error(f"Error in chat: {e}")
             await update.message.reply_text(f"Error in chat: {e}")
 
     async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.info("Show analysis command received")
         try:
             with open('analysis.json', 'r') as f:
                 data = json.load(f)
             message = self.format_results(data)
             await update.message.reply_text(message)
         except FileNotFoundError:
+            logger.warning("Analysis file not found")
             await update.message.reply_text("No analysis found.")
 
     def format_results(self, data):
@@ -75,18 +83,20 @@ class TelegramBot:
         return message
 
     async def webhook_handler(self, request):
-        update = Update.de_json(await request.json(), self.app.bot)
-        await self.app.process_update(update)
-        return web.Response(text="OK")
+        logger.info("Webhook request received")
+        try:
+            update = Update.de_json(await request.json(), self.app.bot)
+            await self.app.process_update(update)
+            return web.Response(text="OK")
+        except Exception as e:
+            logger.error(f"Error in webhook handler: {e}")
+            return web.Response(text="ERROR", status=500)
 
     def run(self):
-        # Webhook için aiohttp server
+        logger.info("Starting webhook server")
         self.web_app = web.Application()
         self.web_app.router.add_post('/webhook', self.webhook_handler)
-
-        # Webhook ayarını Telegram'a bildir
         webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
+        logger.info(f"Setting webhook to {webhook_url}")
         self.app.bot.set_webhook(url=webhook_url)
-
-        # Server'ı başlat
         web.run_app(self.web_app, host='0.0.0.0', port=int(os.getenv('PORT', 8443)))
