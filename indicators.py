@@ -6,7 +6,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def calculate_indicators(klines_1h, klines_4h):
+def calculate_indicators(klines_1h, klines_4h, order_book=None):
     try:
         # Klines verisini kontrol et
         if not klines_1h or not klines_4h:
@@ -15,6 +15,9 @@ def calculate_indicators(klines_1h, klines_4h):
 
         # 1h verisi için DataFrame oluştur
         df_1h = pd.DataFrame(klines_1h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df_1h['timestamp'] = pd.to_datetime(df_1h['timestamp'], unit='ms')
+        df_1h.set_index('timestamp', inplace=True)
+        df_1h.sort_index(inplace=True)
         df_1h['close'] = pd.to_numeric(df_1h['close'], errors='coerce')
         df_1h['high'] = pd.to_numeric(df_1h['high'], errors='coerce')
         df_1h['low'] = pd.to_numeric(df_1h['low'], errors='coerce')
@@ -25,6 +28,9 @@ def calculate_indicators(klines_1h, klines_4h):
 
         # 4h verisi için DataFrame oluştur
         df_4h = pd.DataFrame(klines_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df_4h['timestamp'] = pd.to_datetime(df_4h['timestamp'], unit='ms')
+        df_4h.set_index('timestamp', inplace=True)
+        df_4h.sort_index(inplace=True)
         df_4h['close'] = pd.to_numeric(df_4h['close'], errors='coerce')
         df_4h['high'] = pd.to_numeric(df_4h['high'], errors='coerce')
         df_4h['low'] = pd.to_numeric(df_4h['low'], errors='coerce')
@@ -67,6 +73,45 @@ def calculate_indicators(klines_1h, klines_4h):
         indicators['stoch_k_4h'] = stoch_4h['STOCHk_14_3_3'].iloc[-1] if not stoch_4h.empty and len(stoch_4h) >= 1 else None
         indicators['stoch_d_4h'] = stoch_4h['STOCHd_14_3_3'].iloc[-1] if not stoch_4h.empty and len(stoch_4h) >= 1 else None
         indicators['atr_4h'] = ta.atr(df_4h['high'], df_4h['low'], df_4h['close'], length=14).iloc[-1] if len(df_4h) >= 14 else None
+
+        # Hacim Değişimleri
+        # Saatlik hacim değişimi (son 1 saat vs önceki 1 saat)
+        if len(df_1h) >= 2:
+            indicators['volume_change_1h'] = ((df_1h['volume'].iloc[-1] - df_1h['volume'].iloc[-2]) / df_1h['volume'].iloc[-2] * 100) if df_1h['volume'].iloc[-2] != 0 else None
+        else:
+            indicators['volume_change_1h'] = None
+
+        # 3 saatlik hacim değişimi (son 3 saat vs önceki 3 saat)
+        if len(df_1h) >= 6:
+            last_3h_volume = df_1h['volume'].iloc[-3:].sum()
+            prev_3h_volume = df_1h['volume'].iloc[-6:-3].sum()
+            indicators['volume_change_3h'] = ((last_3h_volume - prev_3h_volume) / prev_3h_volume * 100) if prev_3h_volume != 0 else None
+        else:
+            indicators['volume_change_3h'] = None
+
+        # 6 saatlik hacim değişimi (son 6 saat vs önceki 6 saat)
+        if len(df_1h) >= 12:
+            last_6h_volume = df_1h['volume'].iloc[-6:].sum()
+            prev_6h_volume = df_1h['volume'].iloc[-12:-6].sum()
+            indicators['volume_change_6h'] = ((last_6h_volume - prev_6h_volume) / prev_6h_volume * 100) if prev_6h_volume != 0 else None
+        else:
+            indicators['volume_change_6h'] = None
+
+        # Günlük hacim değişimi (son 24 saat vs önceki 24 saat)
+        if len(df_1h) >= 48:
+            last_24h_volume = df_1h['volume'].iloc[-24:].sum()
+            prev_24h_volume = df_1h['volume'].iloc[-48:-24].sum()
+            indicators['volume_change_24h'] = ((last_24h_volume - prev_24h_volume) / prev_24h_volume * 100) if prev_24h_volume != 0 else None
+        else:
+            indicators['volume_change_24h'] = None
+
+        # Arz-Talep Dengesi (Order Book)
+        if order_book:
+            bids = sum(float(bid[1]) for bid in order_book.get('bids', [])[:10])  # İlk 10 bid’in hacmi
+            asks = sum(float(ask[1]) for ask in order_book.get('asks', [])[:10])  # İlk 10 ask’ın hacmi
+            indicators['bid_ask_ratio'] = (bids / asks) if asks != 0 else None  # Bid/Ask oranı
+        else:
+            indicators['bid_ask_ratio'] = None
 
         logger.info("Indicators calculated successfully")
         return indicators
