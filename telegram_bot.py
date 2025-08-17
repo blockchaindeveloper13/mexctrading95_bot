@@ -50,20 +50,47 @@ class TelegramBot:
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
-        await query.answer()
+        await query.answer()  # Hızlıca cevap ver
         logger.info(f"Button clicked: {query.data}")
         limit = 100 if query.data == 'top_100' else 300
+        try:
+            # Hemen kullanıcıya bilgi ver
+            await query.message.reply_text("Analiz yapılıyor, lütfen bekleyin...")
+            # Analizi background task olarak başlat
+            context.job_queue.run_once(
+                self.analyze_and_send,
+                0,
+                data={'chat_id': self.group_id, 'limit': limit, 'query_message_id': query.message.message_id},
+                chat_id=self.group_id
+            )
+        except Exception as e:
+            logger.error(f"Error in button handler: {e}")
+            await query.message.reply_text(f"Error during analysis initiation: {str(e)}")
+
+    async def analyze_and_send(self, context: ContextTypes.DEFAULT_TYPE):
+        data = context.job.data
+        chat_id = data['chat_id']
+        limit = data['limit']
+        query_message_id = data['query_message_id']
         try:
             results = await self.analyze_coins(limit)
             message = self.format_results(results)
             if not message.strip().endswith("TOP_100:\n") and not message.strip().endswith("TOP_300:\n"):
-                await context.bot.send_message(chat_id=self.group_id, text=message)
+                await context.bot.send_message(chat_id=chat_id, text=message)
             else:
                 logger.warning("No significant analysis results found")
-                await query.message.reply_text("No coins with significant pump/dump probability found.")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="No coins with significant pump/dump probability found.",
+                    reply_to_message_id=query_message_id
+                )
         except Exception as e:
-            logger.error(f"Error in button handler: {e}")
-            await query.message.reply_text(f"Error during analysis: {str(e)}")
+            logger.error(f"Error in analyze_and_send: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Error during analysis: {str(e)}",
+                reply_to_message_id=query_message_id
+            )
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Chat message received: {update.message.text}")
@@ -103,9 +130,27 @@ class TelegramBot:
                     message += f"- DeepSeek: {json.dumps(coin['deepseek_analysis']['short_term'])}\n"
         return message
 
+    async def process_coin(self, symbol, mexc, deepseek):
+        try:
+            data = await mexc.get_market_data(symbol)
+            if data:
+                from indicators import calculate_indicators
+                data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'])
+                if data['indicators']:
+                    data['deepseek_analysis'] = deepseek.analyze_coin(data)
+                    logger.info(f"Processed {symbol} successfully")
+                    return data
+                else:
+                    logger.warning(f"No indicators calculated for {symbol}")
+            else:
+                logger.warning(f"No market data for {symbol}")
+            return None
+        except Exception as e:
+            logger.error(f"Error processing {symbol}: {e}")
+            return None
+
     async def analyze_coins(self, limit):
         from mexc_api import MEXCClient
-        from indicators import calculate_indicators
         from deepseek import DeepSeekClient
         from storage import Storage
 
@@ -116,20 +161,13 @@ class TelegramBot:
         coins = await mexc.get_top_coins(limit)
         results = {'date': datetime.now().strftime('%Y-%m-%d'), 'top_100': [], 'top_300': []}
         
-        for symbol in coins:
-            data = await mexc.get_market_data(symbol)
-            if data:
-                try:
-                    data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'])
-                    if data['indicators']:  # Check if indicators are valid
-                        data['deepseek_analysis'] = deepseek.analyze_coin(data)
-                        results['top_100' if limit == 100 else 'top_300'].append(data)
-                    else:
-                        logger.warning(f"No indicators calculated for {symbol}")
-                except Exception as e:
-                    logger.error(f"Error processing {symbol}: {e}")
-            else:
-                logger.warning(f"No market data for {symbol}")
+        # Parallel processing of coins
+        tasks = [self.process_coin(symbol, mexc, deepseek) for symbol in coins]
+        coin_data = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for data in coin_data:
+            if data and not isinstance(data, Exception):
+                results['top_100' if limit == 100 else 'top_300'].append(data)
         
         storage.save_analysis(results)
         await mexc.close()
