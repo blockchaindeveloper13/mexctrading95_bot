@@ -1,12 +1,12 @@
 import os
 import json
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.error import BadRequest
 from dotenv import load_dotenv
 from openai import OpenAI
 from aiohttp import web
-import asyncio
 import logging
 from datetime import datetime
 
@@ -85,7 +85,7 @@ class TelegramBot:
                 logger.warning(f"No analysis results for Top {limit} {trade_type}")
                 message = f"No significant results for Top {limit} {trade_type} analysis. Please try again later."
             await context.bot.send_message(chat_id=chat_id, text=message)
-            logger.info(f"Analysis sent to Telegram for Top {limit} {trade_type}")
+            logger.info(f"Analysis sent to Telegram for Top {limit} {trade_type}: {message[:100]}...")
         except Exception as e:
             logger.error(f"Error in analyze_and_send: {e}")
             await context.bot.send_message(
@@ -96,14 +96,22 @@ class TelegramBot:
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Chat message received: {update.message.text}")
         try:
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "user", "content": update.message.text}]
-            )
-            await update.message.reply_text(response.choices[0].message.content)
+            # DeepSeek API çağrısına 20 saniye zaman aşımı ekle
+            async with asyncio.timeout(20):
+                response = await asyncio.to_thread(
+                    self.client.chat.completions.create,
+                    model="deepseek-chat",
+                    messages=[{"role": "user", "content": update.message.text}]
+                )
+            reply_text = response.choices[0].message.content
+            await update.message.reply_text(reply_text)
+            logger.info(f"DeepSeek response sent for message: {update.message.text[:50]}...")
+        except asyncio.TimeoutError:
+            logger.error("DeepSeek API timed out")
+            await update.message.reply_text("Error: DeepSeek API timed out. Please try again.")
         except Exception as e:
             logger.error(f"Error in chat: {e}")
-            await update.message.reply_text(f"Error in chat: {e}")
+            await update.message.reply_text(f"Error in chat: {str(e)}")
 
     async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Show analysis command received")
@@ -168,7 +176,7 @@ class TelegramBot:
                 logger.warning(f"No indicators calculated for {symbol} ({trade_type})")
                 return None
             data['deepseek_analysis'] = deepseek.analyze_coin(data, trade_type)
-            logger.info(f"Processed {symbol} ({trade_type}) successfully")
+            logger.info(f"Processed {symbol} ({trade_type}) successfully: {data.get('price', 'N/A')}, indicators={list(data['indicators'].keys())[:5]}...")
             return data
         except Exception as e:
             logger.error(f"Error processing {symbol} ({trade_type}): {e}")
@@ -184,18 +192,20 @@ class TelegramBot:
         storage = Storage()
         
         coins = await mexc.get_top_coins(limit)
-        logger.info(f"Starting analysis for {len(coins)} coins ({trade_type})")
+        logger.info(f"Starting analysis for {len(coins)} coins ({trade_type}): {coins[:5]}...")
         results = {'date': datetime.now().strftime('%Y-%m-%d'), f'top_100_{trade_type}': [], f'top_300_{trade_type}': []}
         
         tasks = [self.process_coin(symbol, mexc, deepseek, trade_type) for symbol in coins]
         coin_data = await asyncio.gather(*tasks, return_exceptions=True)
         
         valid_coins = []
-        for data in coin_data:
+        for symbol, data in zip(coins, coin_data):
             if data and not isinstance(data, Exception):
                 valid_coins.append(data)
             elif isinstance(data, Exception):
-                logger.error(f"Exception in coin processing: {data}")
+                logger.error(f"Exception in processing {symbol}: {data}")
+            else:
+                logger.warning(f"No data returned for {symbol}")
         
         results[f'top_100_{trade_type}' if limit == 100 else f'top_300_{trade_type}'] = valid_coins
         logger.info(f"Processed {len(valid_coins)} valid coins for Top {limit} {trade_type}")
