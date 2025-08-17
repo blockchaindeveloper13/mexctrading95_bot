@@ -18,16 +18,7 @@ class MEXCClient:
             'secret': os.getenv('MEXC_API_SECRET'),
             'enableRateLimit': True,
             'options': {
-                'defaultTimeframe': '1h',  # Varsayılan zaman dilimini 1h yap
-                'timeframes': {
-                    '1m': '1m',
-                    '5m': '5m',
-                    '15m': '15m',
-                    '30m': '30m',
-                    '1h': '1h',  # 60m yerine 1h
-                    '4h': '4h',
-                    '1d': '1d',
-                }
+                'defaultTimeframe': '1h',  # Varsayılan zaman dilimini 1h yap (bu kalabilir, ancak zorunlu değil)
             }
         })
         self.data_file = os.getenv('MARKET_DATA_FILE', 'market_data.json')
