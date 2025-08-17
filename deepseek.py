@@ -1,6 +1,7 @@
-from openai import OpenAI
 import os
+import json
 import logging
+from openai import OpenAI
 from dotenv import load_dotenv
 
 # Loglama ayarları
@@ -43,7 +44,8 @@ class DeepSeekClient:
                 "- Entry price\n"
                 "- Exit price\n"
                 "- Stop loss\n"
-                "- Leverage (if applicable)"
+                "- Leverage (if applicable)\n"
+                "Return the response in JSON format."
             )
             
             response = self.client.chat.completions.create(
@@ -53,12 +55,22 @@ class DeepSeekClient:
             
             analysis = response.choices[0].message.content
             try:
-                # Assuming the response is JSON-like
+                # Try to parse JSON response
                 parsed = json.loads(analysis)
+                if not isinstance(parsed, dict):
+                    logger.warning(f"DeepSeek response for {symbol} is not a valid JSON object: {analysis}")
+                    return {'short_term': {
+                        'pump_probability': 0,
+                        'dump_probability': 0,
+                        'entry_price': price,
+                        'exit_price': price,
+                        'stop_loss': price * 0.95,
+                        'leverage': 'N/A'
+                    }}
                 logger.info(f"DeepSeek analysis completed for {symbol}")
                 return {'short_term': parsed}
-            except json.JSONDecodeError:
-                logger.warning(f"DeepSeek response for {symbol} is not valid JSON: {analysis}")
+            except json.JSONDecodeError as e:
+                logger.warning(f"DeepSeek response for {symbol} is not valid JSON: {analysis}, error: {e}")
                 return {'short_term': {
                     'pump_probability': 0,
                     'dump_probability': 0,
