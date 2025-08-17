@@ -98,7 +98,7 @@ class TelegramBot:
             for coin in data.get(category, []):
                 if coin.get('deepseek_analysis', {}).get('short_term', {}).get('pump_probability', 0) >= 70 or \
                    coin.get('deepseek_analysis', {}).get('short_term', {}).get('dump_probability', 0) >= 70:
-                    message += f"1. {coin['coin']}\n"
+                    message += f"1. {coin.get('coin', 'Unknown')}\n"
                     message += f"- Kısa Vadeli: Giriş: ${coin['deepseek_analysis']['short_term'].get('entry_price', 0)} | Çıkış: ${coin['deepseek_analysis']['short_term'].get('exit_price', 0)} | Stop Loss: ${coin['deepseek_analysis']['short_term'].get('stop_loss', 0)} | Kaldıraç: {coin['deepseek_analysis']['short_term'].get('leverage', 'N/A')}\n"
                     message += f"- DeepSeek: {json.dumps(coin['deepseek_analysis']['short_term'])}\n"
         return message
@@ -119,9 +119,17 @@ class TelegramBot:
         for symbol in coins:
             data = await mexc.get_market_data(symbol)
             if data:
-                data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'])
-                data['deepseek_analysis'] = deepseek.analyze_coin(data)
-                results['top_100' if limit == 100 else 'top_300'].append(data)
+                try:
+                    data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'])
+                    if data['indicators']:  # Check if indicators are valid
+                        data['deepseek_analysis'] = deepseek.analyze_coin(data)
+                        results['top_100' if limit == 100 else 'top_300'].append(data)
+                    else:
+                        logger.warning(f"No indicators calculated for {symbol}")
+                except Exception as e:
+                    logger.error(f"Error processing {symbol}: {e}")
+            else:
+                logger.warning(f"No market data for {symbol}")
         
         storage.save_analysis(results)
         await mexc.close()
