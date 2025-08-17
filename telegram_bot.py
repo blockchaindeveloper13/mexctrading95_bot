@@ -50,7 +50,7 @@ class MEXCClient:
     async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
         logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries})")
         try:
-            if not isinstance(timeframe, str) or timeframe not in ['1m', '5m', '15m', '30m', '60m', '4h', '1d']:
+            if not isinstance(timeframe, str) or timeframe not in ['1m', '5m', '15m', '30m', '60m']:
                 logger.error(f"Invalid or None timeframe for {symbol}: {timeframe}")
                 raise ValueError(f"Invalid or None timeframe: {timeframe}")
             for attempt in range(retries):
@@ -80,80 +80,72 @@ class MEXCClient:
             logger.error(f"Error fetching order book for {symbol}: {e}")
             return {'bids': [], 'asks': []}
 
-    async def fetch_and_save_market_data(self, symbols=None, timeframes=['60m', '4h']):
-        logger.info("Starting fetch_and_save_market_data")
-        if not timeframes or any(tf is None or tf not in ['1m', '5m', '15m', '30m', '60m', '4h', '1d'] for tf in timeframes):
+    async def fetch_and_save_market_data(self, symbol):
+        logger.info(f"Fetching market data for {symbol}")
+        timeframes = ['1m', '5m', '15m', '30m', '60m']
+        if not timeframes or any(tf is None or tf not in ['1m', '5m', '15m', '30m', '60m'] for tf in timeframes):
             logger.error(f"Invalid timeframes: {timeframes}")
             raise ValueError(f"Invalid timeframes: {timeframes}")
-        
-        markets = await self.get_exchange_info()
-        usdt_pairs = [m['symbol'] for m in markets['symbols'] if m['symbol'].endswith('USDT')]
-        Cann logger.info(f"{len(usdt_pairs)} USDT pairs found: {usdt_pairs[:5]}...")
-
-        tickers = await self.get_tickers()
-        logger.info(f"Fetched {len(tickers)} tickers")
-
-        top_symbols = sorted(
-            [(s, tickers[s].get('quoteVolume', 0)) for s in usdt_pairs if s in tickers],
-            key=lambda x: x[1], reverse=True
-        )
-        top_symbols = [s for s, _ in top_symbols]
-        if symbols:
-            top_symbols = [s for s in top_symbols if s in symbols]
-        else:
-            top_symbols = top_symbols[:100]
-        logger.info(f"Top {len(top_symbols)} symbols: {top_symbols[:5]}...")
-
-        data = []
-        for symbol in top_symbols:
-            try:
-                ticker = tickers.get(symbol, {})
-                price = float(ticker.get('lastPrice', 0)) if ticker.get('lastPrice') else 0.0
-                volume = float(ticker.get('quoteVolume', 0)) if ticker.get('quoteVolume') else 0.0
-
-                klines = {}
-                for tf in timeframes:
-                    logger.debug(f"Fetching {tf} kline for {symbol}")
-                    klines[tf] = await self.get_kline(symbol, tf, limit=100, retries=3, delay=2)
-                    if not klines[tf]:
-                        logger.warning(f"No {tf} kline data for {symbol}, skipping")
-                        break
-                if not all(klines.get(tf) for tf in timeframes):
-                    logger.warning(f"Incomplete kline data for {symbol}, skipping")
-                    continue
-
-                order_book = await self.get_order_book(symbol, limit=10)
-
-                coin_data = {
-                    'coin': symbol,
-                    'price': price,
-                    'volume': volume,
-                    'klines': klines,
-                    'order_book': order_book
-                }
-                data.append(coin_data)
-                logger.info(f"Data for {symbol}: price={price}, volume={volume}, "
-                           f"klines_60m={len(klines.get('60m', []))}, klines_4h={len(klines.get('4h', []))}")
-
-                await asyncio.sleep(2.0)  # Rate limit için artırıldı
-            except Exception as e:
-                logger.error(f"Error processing {symbol}: {e}")
 
         try:
-            with open(self.data_file, 'w') as f:
-                json.dump(data, f)
-            logger.info(f"Saved {len(data)} coins to {self.data_file}")
+            ticker = await self.exchange.fetch_ticker(symbol)
+            price = float(ticker.get('last', 0)) if ticker.get('last') else 0.0
+            volume = float(ticker.get('quoteVolume', 0)) if ticker.get('quoteVolume') else 0.0
+
+            klines = {}
+            for tf in timeframes:
+                logger.debug(f"Fetching {tf} kline for {symbol}")
+                klines[tf] = await self.get_kline(symbol, tf, limit=100, retries=3, delay=2)
+                if not klines[tf]:
+                    logger.warning(f"No {tf} kline data for {symbol}, skipping")
+                    return None
+            if not all(klines.get(tf) for tf in timeframes):
+                logger.warning(f"Incomplete kline data for {symbol}, skipping")
+                return None
+
+            order_book = await self.get_order_book(symbol, limit=10)
+
+            coin_data = {
+                'coin': symbol,
+                'price': price,
+                'volume': volume,
+                'klines': klines,
+                'order_book': order_book
+            }
+
+            # JSON'a kaydet
+            try:
+                data = []
+                if os.path.exists(self.data_file):
+                    with open(self.data_file, 'r') as f:
+                        data = json.load(f)
+                data = [d for d in data if d['coin'] != symbol]  # Eski veriyi güncelle
+                data.append(coin_data)
+                with open(self.data_file, 'w') as f:
+                    json.dump(data, f)
+                logger.info(f"Saved data for {symbol} to {self.data_file}")
+            except Exception as e:
+                logger.error(f"Error saving to {self.data_file}: {e}")
+                return None
+
+            logger.info(f"Data for {symbol}: price={price}, volume={volume}, "
+                       f"klines_1m={len(klines.get('1m', []))}, klines_5m={len(klines.get('5m', []))}, "
+                       f"klines_15m={len(klines.get('15m', []))}, klines_30m={len(klines.get('30m', []))}, "
+                       f"klines_60m={len(klines.get('60m', []))}")
+            await asyncio.sleep(2.0)  # Rate limit için
+            return coin_data
         except Exception as e:
-            logger.error(f"Error saving to {self.data_file}: {e}")
+            logger.error(f"Error fetching market data for {symbol}: {e}")
+            return None
 
-        return data
-
-    async def get_top_coins(self, limit=100, timeframes=['60m', '4h']):
+    async def get_top_coins(self, limit=100):
         logger.debug(f"Fetching top {limit} coins")
         try:
             markets = await self.exchange.load_markets()
             usdt_pairs = [s for s in markets if s.endswith('/USDT')]
+            logger.info(f"{len(usdt_pairs)} USDT pairs found: {usdt_pairs[:5]}...")
             tickers = await self.get_tickers()
+            logger.info(f"Fetched {len(tickers)} tickers")
             sorted_tickers = sorted(
                 [(s, tickers[s].get('quoteVolume', 0)) for s in usdt_pairs if s in tickers],
                 key=lambda x: x[1], reverse=True
@@ -163,13 +155,12 @@ class MEXCClient:
             if not coins:
                 logger.warning("No valid USDT pairs found")
                 return []
-            await self.fetch_and_save_market_data(coins, timeframes)
             return coins
         except Exception as e:
             logger.error(f"Error fetching top coins: {e}")
             return []
 
-    async def get_market_data(self, symbol, timeframes=['60m', '4h']):
+    async def get_market_data(self, symbol, timeframes=['1m', '5m', '15m', '30m', '60m']):
         logger.debug(f"Fetching market data for {symbol} from JSON")
         try:
             with open(self.data_file, 'r') as f:
@@ -184,7 +175,9 @@ class MEXCClient:
                         'order_book': item.get('order_book', {'bids': [], 'asks': []})
                     }
                     logger.info(f"Fetched data for {symbol}: price={data['price']}, "
-                               f"klines_60m={len(data['klines']['60m'])}, klines_4h={len(data['klines']['4h'])}")
+                               f"klines_1m={len(data['klines']['1m'])}, klines_5m={len(data['klines']['5m'])}, "
+                               f"klines_15m={len(data['klines']['15m'])}, klines_30m={len(data['klines']['30m'])}, "
+                               f"klines_60m={len(data['klines']['60m'])}")
                     return data
             logger.warning(f"No data for {symbol} in {self.data_file}")
             return None
@@ -200,73 +193,42 @@ class MEXCClient:
         await self.exchange.close()
         logger.info("MEXCClient closed")
 
-def calculate_indicators(klines_60m, klines_4h, order_book=None):
-    logger.debug(f"Calculating indicators: klines_60m length={len(klines_60m)}, klines_4h length={len(klines_4h)}")
+def calculate_indicators(klines_1m, klines_5m, klines_15m, klines_30m, klines_60m, order_book=None):
+    logger.debug(f"Calculating indicators: klines_1m={len(klines_1m)}, klines_5m={len(klines_5m)}, "
+                f"klines_15m={len(klines_15m)}, klines_30m={len(klines_30m)}, klines_60m={len(klines_60m)}")
     try:
-        if not klines_60m or not klines_4h:
+        if not all([klines_1m, klines_5m, klines_15m, klines_30m, klines_60m]):
             logger.warning("Empty klines data provided")
             return None
 
-        df_60m = pd.DataFrame(klines_60m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df_60m['timestamp'] = pd.to_datetime(df_60m['timestamp'], unit='ms')
-        df_60m.set_index('timestamp', inplace=True)
-        df_60m = df_60m.astype(float)
-
-        df_4h = pd.DataFrame(klines_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df_4h['timestamp'] = pd.to_datetime(df_4h['timestamp'], unit='ms')
-        df_4h.set_index('timestamp', inplace=True)
-        df_4h = df_4h.astype(float)
+        # DataFrame'leri oluştur
+        dfs = {}
+        for tf, klines in zip(['1m', '5m', '15m', '30m', '60m'], [klines_1m, klines_5m, klines_15m, klines_30m, klines_60m]):
+            df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            df = df.astype(float)
+            dfs[tf] = df
 
         indicators = {}
-        indicators['rsi_60m'] = ta.rsi(df_60m['close'], length=14).iloc[-1] if len(df_60m) >= 14 else None
-        indicators['ema_20_60m'] = ta.ema(df_60m['close'], length=20).iloc[-1] if len(df_60m) >= 20 else None
-        indicators['ema_50_60m'] = ta.ema(df_60m['close'], length=50).iloc[-1] if len(df_60m) >= 50 else None
-        indicators['macd_60m'] = ta.macd(df_60m['close'])['MACD_12_26_9'].iloc[-1] if len(df_60m) >= 26 else None
-        indicators['macd_signal_60m'] = ta.macd(df_60m['close'])['MACDs_12_26_9'].iloc[-1] if len(df_60m) >= 26 else None
-        indicators['bb_upper_60m'] = ta.bbands(df_60m['close'], length=20)['BBU_20_2.0'].iloc[-1] if len(df_60m) >= 20 else None
-        indicators['bb_lower_60m'] = ta.bbands(df_60m['close'], length=20)['BBL_20_2.0'].iloc[-1] if len(df_60m) >= 20 else None
-        indicators['vwap_60m'] = ta.vwap(df_60m['high'], df_60m['low'], df_60m['close'], df_60m['volume']).iloc[-1] if len(df_60m) >= 1 else None
-        indicators['stoch_k_60m'] = ta.stoch(df_60m['high'], df_60m['low'], df_60m['close'])['STOCHk_14_3_3'].iloc[-1] if len(df_60m) >= 14 else None
-        indicators['stoch_d_60m'] = ta.stoch(df_60m['high'], df_60m['low'], df_60m['close'])['STOCHd_14_3_3'].iloc[-1] if len(df_60m) >= 14 else None
-        indicators['atr_60m'] = ta.atr(df_60m['high'], df_60m['low'], df_60m['close'], length=14).iloc[-1] if len(df_60m) >= 14 else None
+        for tf in ['1m', '5m', '15m', '30m', '60m']:
+            df = dfs[tf]
+            indicators[f'rsi_{tf}'] = ta.rsi(df['close'], length=14).iloc[-1] if len(df) >= 14 else None
+            indicators[f'ema_20_{tf}'] = ta.ema(df['close'], length=20).iloc[-1] if len(df) >= 20 else None
+            indicators[f'ema_50_{tf}'] = ta.ema(df['close'], length=50).iloc[-1] if len(df) >= 50 else None
+            indicators[f'macd_{tf}'] = ta.macd(df['close'])['MACD_12_26_9'].iloc[-1] if len(df) >= 26 else None
+            indicators[f'macd_signal_{tf}'] = ta.macd(df['close'])['MACDs_12_26_9'].iloc[-1] if len(df) >= 26 else None
+            indicators[f'bb_upper_{tf}'] = ta.bbands(df['close'], length=20)['BBU_20_2.0'].iloc[-1] if len(df) >= 20 else None
+            indicators[f'bb_lower_{tf}'] = ta.bbands(df['close'], length=20)['BBL_20_2.0'].iloc[-1] if len(df) >= 20 else None
+            indicators[f'vwap_{tf}'] = ta.vwap(df['high'], df['low'], df['close'], df['volume']).iloc[-1] if len(df) >= 1 else None
+            indicators[f'stoch_k_{tf}'] = ta.stoch(df['high'], df['low'], df['close'])['STOCHk_14_3_3'].iloc[-1] if len(df) >= 14 else None
+            indicators[f'stoch_d_{tf}'] = ta.stoch(df['high'], df['low'], df['close'])['STOCHd_14_3_3'].iloc[-1] if len(df) >= 14 else None
+            indicators[f'atr_{tf}'] = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1] if len(df) >= 14 else None
 
-        indicators['rsi_4h'] = ta.rsi(df_4h['close'], length=14).iloc[-1] if len(df_4h) >= 14 else None
-        indicators['ema_20_4h'] = ta.ema(df_4h['close'], length=20).iloc[-1] if len(df_4h) >= 20 else None
-        indicators['ema_50_4h'] = ta.ema(df_4h['close'], length=50).iloc[-1] if len(df_4h) >= 50 else None
-        indicators['macd_4h'] = ta.macd(df_4h['close'])['MACD_12_26_9'].iloc[-1] if len(df_4h) >= 26 else None
-        indicators['macd_signal_4h'] = ta.macd(df_4h['close'])['MACDs_12_26_9'].iloc[-1] if len(df_4h) >= 26 else None
-        indicators['bb_upper_4h'] = ta.bbands(df_4h['close'], length=20)['BBU_20_2.0'].iloc[-1] if len(df_4h) >= 20 else None
-        indicators['bb_lower_4h'] = ta.bbands(df_4h['close'], length=20)['BBL_20_2.0'].iloc[-1] if len(df_4h) >= 20 else None
-        indicators['vwap_4h'] = ta.vwap(df_4h['high'], df_4h['low'], df_4h['close'], df_4h['volume']).iloc[-1] if len(df_4h) >= 1 else None
-        indicators['stoch_k_4h'] = ta.stoch(df_4h['high'], df_4h['low'], df_4h['close'])['STOCHk_14_3_3'].iloc[-1] if len(df_4h) >= 14 else None
-        indicators['stoch_d_4h'] = ta.stoch(df_4h['high'], df_4h['low'], df_4h['close'])['STOCHd_14_3_3'].iloc[-1] if len(df_4h) >= 14 else None
-        indicators['atr_4h'] = ta.atr(df_4h['high'], df_4h['low'], df_4h['close'], length=14).iloc[-1] if len(df_4h) >= 14 else None
-
-        if len(df_60m) >= 2:
-            indicators['volume_change_60m'] = ((df_60m['volume'].iloc[-1] - df_60m['volume'].iloc[-2]) / df_60m['volume'].iloc[-2] * 100) if df_60m['volume'].iloc[-2] != 0 else None
-        else:
-            indicators['volume_change_60m'] = None
-
-        if len(df_60m) >= 6:
-            last_3h_volume = df_60m['volume'].iloc[-3:].sum()
-            prev_3h_volume = df_60m['volume'].iloc[-6:-3].sum()
-            indicators['volume_change_3h'] = ((last_3h_volume - prev_3h_volume) / prev_3h_volume * 100) if prev_3h_volume != 0 else None
-        else:
-            indicators['volume_change_3h'] = None
-
-        if len(df_60m) >= 12:
-            last_6h_volume = df_60m['volume'].iloc[-6:].sum()
-            prev_6h_volume = df_60m['volume'].iloc[-12:-6].sum()
-            indicators['volume_change_6h'] = ((last_6h_volume - prev_6h_volume) / prev_6h_volume * 100) if prev_6h_volume != 0 else None
-        else:
-            indicators['volume_change_6h'] = None
-
-        if len(df_60m) >= 48:
-            last_24h_volume = df_60m['volume'].iloc[-24:].sum()
-            prev_24h_volume = df_60m['volume'].iloc[-48:-24].sum()
-            indicators['volume_change_24h'] = ((last_24h_volume - prev_24h_volume) / prev_24h_volume * 100) if prev_24h_volume != 0 else None
-        else:
-            indicators['volume_change_24h'] = None
+            if len(df) >= 2:
+                indicators[f'volume_change_{tf}'] = ((df['volume'].iloc[-1] - df['volume'].iloc[-2]) / df['volume'].iloc[-2] * 100) if df['volume'].iloc[-2] != 0 else None
+            else:
+                indicators[f'volume_change_{tf}'] = None
 
         if order_book:
             bids = sum(float(bid[1]) for bid in order_book.get('bids', [])[:10])
@@ -309,6 +271,50 @@ class DeepSeekClient:
             prompt = (
                 f"Analyze {symbol} ({trade_type.upper()} trading):\n"
                 f"Price: ${price}\nVolume: ${volume}\n"
+                f"1m RSI: {indicators.get('rsi_1m', 'N/A')}\n"
+                f"1m EMA20: {indicators.get('ema_20_1m', 'N/A')}\n"
+                f"1m EMA50: {indicators.get('ema_50_1m', 'N/A')}\n"
+                f"1m MACD: {indicators.get('macd_1m', 'N/A')}\n"
+                f"1m MACD Signal: {indicators.get('macd_signal_1m', 'N/A')}\n"
+                f"1m Bollinger Upper: {indicators.get('bb_upper_1m', 'N/A')}\n"
+                f"1m Bollinger Lower: {indicators.get('bb_lower_1m', 'N/A')}\n"
+                f"1m VWAP: {indicators.get('vwap_1m', 'N/A')}\n"
+                f"1m Stochastic %K: {indicators.get('stoch_k_1m', 'N/A')}\n"
+                f"1m Stochastic %D: {indicators.get('stoch_d_1m', 'N/A')}\n"
+                f"1m ATR: {indicators.get('atr_1m', 'N/A')}\n"
+                f"5m RSI: {indicators.get('rsi_5m', 'N/A')}\n"
+                f"5m EMA20: {indicators.get('ema_20_5m', 'N/A')}\n"
+                f"5m EMA50: {indicators.get('ema_50_5m', 'N/A')}\n"
+                f"5m MACD: {indicators.get('macd_5m', 'N/A')}\n"
+                f"5m MACD Signal: {indicators.get('macd_signal_5m', 'N/A')}\n"
+                f"5m Bollinger Upper: {indicators.get('bb_upper_5m', 'N/A')}\n"
+                f"5m Bollinger Lower: {indicators.get('bb_lower_5m', 'N/A')}\n"
+                f"5m VWAP: {indicators.get('vwap_5m', 'N/A')}\n"
+                f"5m Stochastic %K: {indicators.get('stoch_k_5m', 'N/A')}\n"
+                f"5m Stochastic %D: {indicators.get('stoch_d_5m', 'N/A')}\n"
+                f"5m ATR: {indicators.get('atr_5m', 'N/A')}\n"
+                f"15m RSI: {indicators.get('rsi_15m', 'N/A')}\n"
+                f"15m EMA20: {indicators.get('ema_20_15m', 'N/A')}\n"
+                f"15m EMA50: {indicators.get('ema_50_15m', 'N/A')}\n"
+                f"15m MACD: {indicators.get('macd_15m', 'N/A')}\n"
+                f"15m MACD Signal: {indicators.get('macd_signal_15m', 'N/A')}\n"
+                f"15m Bollinger Upper: {indicators.get('bb_upper_15m', 'N/A')}\n"
+                f"15m Bollinger Lower: {indicators.get('bb_lower_15m', 'N/A')}\n"
+                f"15m VWAP: {indicators.get('vwap_15m', 'N/A')}\n"
+                f"15m Stochastic %K: {indicators.get('stoch_k_15m', 'N/A')}\n"
+                f"15m Stochastic %D: {indicators.get('stoch_d_15m', 'N/A')}\n"
+                f"15m ATR: {indicators.get('atr_15m', 'N/A')}\n"
+                f"30m RSI: {indicators.get('rsi_30m', 'N/A')}\n"
+                f"30m EMA20: {indicators.get('ema_20_30m', 'N/A')}\n"
+                f"30m EMA50: {indicators.get('ema_50_30m', 'N/A')}\n"
+                f"30m MACD: {indicators.get('macd_30m', 'N/A')}\n"
+                f"30m MACD Signal: {indicators.get('macd_signal_30m', 'N/A')}\n"
+                f"30m Bollinger Upper: {indicators.get('bb_upper_30m', 'N/A')}\n"
+                f"30m Bollinger Lower: {indicators.get('bb_lower_30m', 'N/A')}\n"
+                f"30m VWAP: {indicators.get('vwap_30m', 'N/A')}\n"
+                f"30m Stochastic %K: {indicators.get('stoch_k_30m', 'N/A')}\n"
+                f"30m Stochastic %D: {indicators.get('stoch_d_30m', 'N/A')}\n"
+                f"30m ATR: {indicators.get('atr_30m', 'N/A')}\n"
                 f"60m RSI: {indicators.get('rsi_60m', 'N/A')}\n"
                 f"60m EMA20: {indicators.get('ema_20_60m', 'N/A')}\n"
                 f"60m EMA50: {indicators.get('ema_50_60m', 'N/A')}\n"
@@ -320,21 +326,11 @@ class DeepSeekClient:
                 f"60m Stochastic %K: {indicators.get('stoch_k_60m', 'N/A')}\n"
                 f"60m Stochastic %D: {indicators.get('stoch_d_60m', 'N/A')}\n"
                 f"60m ATR: {indicators.get('atr_60m', 'N/A')}\n"
-                f"4h RSI: {indicators.get('rsi_4h', 'N/A')}\n"
-                f"4h EMA20: {indicators.get('ema_20_4h', 'N/A')}\n"
-                f"4h EMA50: {indicators.get('ema_50_4h', 'N/A')}\n"
-                f"4h MACD: {indicators.get('macd_4h', 'N/A')}\n"
-                f"4h MACD Signal: {indicators.get('macd_signal_4h', 'N/A')}\n"
-                f"4h Bollinger Upper: {indicators.get('bb_upper_4h', 'N/A')}\n"
-                f"4h Bollinger Lower: {indicators.get('bb_lower_4h', 'N/A')}\n"
-                f"4h VWAP: {indicators.get('vwap_4h', 'N/A')}\n"
-                f"4h Stochastic %K: {indicators.get('stoch_k_4h', 'N/A')}\n"
-                f"4h Stochastic %D: {indicators.get('stoch_d_4h', 'N/A')}\n"
-                f"4h ATR: {indicators.get('atr_4h', 'N/A')}\n"
+                f"Volume Change 1m: {indicators.get('volume_change_1m', 'N/A')}%;\n"
+                f"Volume Change 5m: {indicators.get('volume_change_5m', 'N/A')}%;\n"
+                f"Volume Change 15m: {indicators.get('volume_change_15m', 'N/A')}%;\n"
+                f"Volume Change 30m: {indicators.get('volume_change_30m', 'N/A')}%;\n"
                 f"Volume Change 60m: {indicators.get('volume_change_60m', 'N/A')}%;\n"
-                f"Volume Change 3h: {indicators.get('volume_change_3h', 'N/A')}%;\n"
-                f"Volume Change 6h: {indicators.get('volume_change_6h', 'N/A')}%;\n"
-                f"Volume Change 24h: {indicators.get('volume_change_24h', 'N/A')}%;\n"
                 f"Bid/Ask Ratio: {indicators.get('bid_ask_ratio', 'N/A')}\n"
                 "Provide short-term trading analysis (1-4 hours). Return JSON with:\n"
                 "- pump_probability (0-100%)\n- dump_probability (0-100%)\n- entry_price\n- exit_price\n- stop_loss\n- leverage\n- fundamental_analysis\n"
@@ -364,7 +360,7 @@ class Storage:
     def save_analysis(self, data):
         logger.debug(f"Saving analysis data")
         try:
-            if not any(data.get(key, []) for key in data if key.startswith('top_')):
+            if not data:
                 logger.warning("No valid data to save")
                 return
             with open('/tmp/analysis.json', 'w') as f:
@@ -434,12 +430,10 @@ class TelegramBot:
         trade_type = data['trade_type']
         logger.debug(f"Analyzing for chat_id={chat_id}, limit={limit}, trade_type={trade_type}")
         try:
-            results = await self.analyze_coins(limit, trade_type)
-            message = self.format_results(results, trade_type)
-            if message.strip().endswith(f"TOP_{limit}_{trade_type.upper()}:\n"):
-                message = f"No significant results for Top {limit} {trade_type} analysis."
-            await context.bot.send_message(chat_id=chat_id, text=message)
-            logger.info(f"Analysis sent for Top {limit} {trade_type}")
+            results = await self.analyze_coins(limit, trade_type, chat_id)
+            if not results.get(f'top_{limit}_{trade_type}'):
+                await context.bot.send_message(chat_id=chat_id, text=f"No significant results for Top {limit} {trade_type} analysis.")
+            logger.info(f"Analysis completed for Top {limit} {trade_type}")
         except Exception as e:
             logger.error(f"Error in analyze_and_send: {e}")
             await context.bot.send_message(chat_id=chat_id, text=f"Error during {trade_type} analysis: {str(e)}")
@@ -480,77 +474,82 @@ class TelegramBot:
             logger.error(f"Error loading analysis: {e}")
             await update.message.reply_text(f"Error: {str(e)}")
 
-    def format_results(self, data, trade_type):
-        logger.debug(f"Formatting results for {trade_type}")
-        message = f"📊 {trade_type.upper()} Günlük Coin Analizi ({data.get('date', 'Unknown')})\n"
-        for category in [f'top_100_{trade_type}', f'top_300_{trade_type}']:
-            message += f"\n{category.upper()}:\n"
-            coins = data.get(category, [])
-            if not coins:
-                message += "No coins analyzed yet.\n"
-                continue
-            coins.sort(key=lambda x: x.get('deepseek_analysis', {}).get('short_term', {}).get('pump_probability', 0), reverse=True)
-            for i, coin in enumerate(coins[:10], 1):
-                indicators = coin.get('indicators', {})
-                message += f"{i}. {coin.get('coin', 'Unknown')}\n"
-                message += (
-                    f"- Kısa Vadeli: Giriş: ${coin.get('deepseek_analysis', {}).get('short_term', {}).get('entry_price', 0):.2f} | "
-                    f"Çıkış: ${coin.get('deepseek_analysis', {}).get('short_term', {}).get('exit_price', 0):.2f} | "
-                    f"Stop Loss: ${coin.get('deepseek_analysis', {}).get('short_term', {}).get('stop_loss', 0):.2f} | "
-                    f"Kaldıraç: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('leverage', 'N/A')}\n"
-                    f"- Pump Olasılığı: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('pump_probability', 0)}% | "
-                    f"Dump Olasılığı: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('dump_probability', 0)}%\n"
-                    f"- Temel Analiz: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('fundamental_analysis', 'No data')}\n"
-                    f"- Hacim Değişimleri: 60m: {indicators.get('volume_change_60m', 'N/A'):.2f}% | "
-                    f"3h: {indicators.get('volume_change_3h', 'N/A'):.2f}% | "
-                    f"6h: {indicators.get('volume_change_6h', 'N/A'):.2f}% | "
-                    f"24h: {indicators.get('volume_change_24h', 'N/A'):.2f}%\n"
-                    f"- Bid/Ask Oranı: {indicators.get('bid_ask_ratio', 'N/A'):.2f}\n"
-                )
+    def format_results(self, coin_data, trade_type, symbol):
+        logger.debug(f"Formatting results for {symbol} ({trade_type})")
+        indicators = coin_data.get('indicators', {})
+        analysis = coin_data.get('deepseek_analysis', {}).get('short_term', {})
+        message = (
+            f"📊 {symbol} {trade_type.upper()} Analizi ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
+            f"- Kısa Vadeli: Giriş: ${analysis.get('entry_price', 0):.2f} | "
+            f"Çıkış: ${analysis.get('exit_price', 0):.2f} | "
+            f"Stop Loss: ${analysis.get('stop_loss', 0):.2f} | "
+            f"Kaldıraç: {analysis.get('leverage', 'N/A')}\n"
+            f"- Pump Olasılığı: {analysis.get('pump_probability', 0)}% | "
+            f"Dump Olasılığı: {analysis.get('dump_probability', 0)}%\n"
+            f"- Temel Analiz: {analysis.get('fundamental_analysis', 'No data')}\n"
+            f"- Hacim Değişimleri: 1m: {indicators.get('volume_change_1m', 'N/A'):.2f}% | "
+            f"5m: {indicators.get('volume_change_5m', 'N/A'):.2f}% | "
+            f"15m: {indicators.get('volume_change_15m', 'N/A'):.2f}% | "
+            f"30m: {indicators.get('volume_change_30m', 'N/A'):.2f}% | "
+            f"60m: {indicators.get('volume_change_60m', 'N/A'):.2f}%\n"
+            f"- Bid/Ask Oranı: {indicators.get('bid_ask_ratio', 'N/A'):.2f}\n"
+        )
         return message
 
-    async def process_coin(self, symbol, mexc, deepseek, trade_type):
+    async def process_coin(self, symbol, mexc, deepseek, trade_type, chat_id):
         logger.debug(f"Processing coin: {symbol} ({trade_type})")
         try:
-            data = await mexc.get_market_data(symbol)
-            if not data or not data['klines']['60m'] or not data['klines']['4h']:
+            # Veriyi çek ve JSON'a kaydet
+            data = await mexc.fetch_and_save_market_data(symbol)
+            if not data or not all(data['klines'].get(tf) for tf in ['1m', '5m', '15m', '30m', '60m']):
                 logger.warning(f"No valid market data for {symbol} ({trade_type})")
                 return None
-            data['indicators'] = calculate_indicators(data['klines']['60m'], data['klines']['4h'], data.get('order_book'))
+
+            # Göstergeleri hesapla
+            data['indicators'] = calculate_indicators(
+                data['klines']['1m'], data['klines']['5m'], data['klines']['15m'],
+                data['klines']['30m'], data['klines']['60m'], data.get('order_book')
+            )
             if not data['indicators']:
                 logger.warning(f"No indicators for {symbol} ({trade_type})")
                 return None
+
+            # DeepSeek analizi yap
             data['deepseek_analysis'] = deepseek.analyze_coin(data, trade_type)
-            logger.info(f"Processed {symbol} ({trade_type}): price={data.get('price')}, klines_60m={len(data['klines']['60m'])}")
+            logger.info(f"Processed {symbol} ({trade_type}): price={data.get('price')}, "
+                       f"klines_60m={len(data['klines']['60m'])}")
+
+            # Telegram'a gönder
+            message = self.format_results(data, trade_type, symbol)
+            await self.app.bot.send_message(chat_id=chat_id, text=message)
+            logger.info(f"Analysis sent for {symbol} ({trade_type})")
+
+            # Analizi kaydet
+            storage = Storage()
+            storage.save_analysis({f'{symbol}_{trade_type}': [data]})
+
             return data
         except Exception as e:
             logger.error(f"Error processing {symbol} ({trade_type}): {e}")
+            await self.app.bot.send_message(chat_id=chat_id, text=f"Error processing {symbol}: {str(e)}")
             return None
 
-    async def analyze_coins(self, limit, trade_type):
+    async def analyze_coins(self, limit, trade_type, chat_id):
         logger.debug(f"Starting analyze_coins for limit={limit}, trade_type={trade_type}")
         mexc = MEXCClient()
         deepseek = DeepSeekClient()
-        storage = Storage()
 
         coins = await mexc.get_top_coins(limit)
         logger.info(f"Analyzing {len(coins)} coins: {coins[:5]}...")
 
-        tasks = [self.process_coin(symbol, mexc, deepseek, trade_type) for symbol in coins]
-        coin_data = await asyncio.gather(*tasks, return_exceptions=True)
+        results = {'date': datetime.now().strftime('%Y-%m-%d'), f'top_{limit}_{trade_type}': []}
+        for symbol in coins:
+            coin_data = await self.process_coin(symbol, mexc, deepseek, trade_type, chat_id)
+            if coin_data:
+                results[f'top_{limit}_{trade_type}'].append(coin_data)
+            await asyncio.sleep(2.0)  # Coin'ler arasında rate limit için bekleme
 
-        valid_coins = []
-        for symbol, data in zip(coins, coin_data):
-            if data and not isinstance(data, Exception):
-                valid_coins.append(data)
-            else:
-                logger.warning(f"No data for {symbol}")
-
-        results = {'date': datetime.now().strftime('%Y-%m-%d'), f'top_100_{trade_type}': [], f'top_300_{trade_type}': []}
-        results[f'top_{limit}_{trade_type}'] = valid_coins
-        logger.info(f"Processed {len(valid_coins)} valid coins for Top {limit} {trade_type}")
-
-        storage.save_analysis(results)
+        logger.info(f"Processed {len(results[f'top_{limit}_{trade_type}'])} valid coins for Top {limit} {trade_type}")
         await mexc.close()
         return results
 
@@ -595,6 +594,6 @@ if __name__ == "__main__":
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 100
         trade_type = sys.argv[3] if len(sys.argv) > 3 else 'spot'
         bot = TelegramBot()
-        asyncio.run(bot.analyze_coins(limit, trade_type))
+        asyncio.run(bot.analyze_coins(limit, trade_type, bot.group_id))
     else:
         main()
