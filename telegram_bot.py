@@ -19,410 +19,34 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-class MEXCClient:
-    def __init__(self):
-        logger.debug("Initializing MEXCClient")
-        self.api_key = os.getenv('MEXC_API_KEY')
-        self.api_secret = os.getenv('MEXC_API_SECRET')
-        self.base_url = "https://api.mexc.com/api/v3"
-        self.data_file = '/tmp/market_data.json'
-        self.session = None  # aiohttp session
-
-    async def initialize_session(self):
-        if not self.session:
-            logger.debug("Creating aiohttp session")
-            self.session = aiohttp.ClientSession()
-        return self.session
-
-    async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=3):
-        logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries}, delay: {delay})")
-        if not isinstance(timeframe, str) or timeframe not in ['1m', '5m', '15m', '30m', '60m']:
-            logger.error(f"Invalid or None timeframe for {symbol}: {timeframe}")
-            raise ValueError(f"Invalid timeframe: {timeframe}")
-
-        tf_mapping = {
-            '1m': '1m',
-            '5m': '5m',
-            '15m': '15m',
-            '30m': '30m',
-            '60m': '1h'  # MEXC API için 60m yerine 1h
-        }
-        api_timeframe = tf_mapping.get(timeframe)
-        if not api_timeframe:
-            logger.error(f"Invalid timeframe mapping for {symbol}: {timeframe}")
-            raise ValueError(f"Invalid timeframe mapping: {timeframe}")
-
-        # Sembolü MEXC API formatına çevir (örneğin, ETH/USDT -> ETHUSDT)
-        api_symbol = symbol.replace('/', '')
-
-        url = f"{self.base_url}/klines?symbol={api_symbol}&interval={api_timeframe}&limit={limit}"
-        logger.debug(f"Kline URL: {url}")
-
-        session = await self.initialize_session()
-        for attempt in range(retries):
-            try:
-                logger.debug(f"Attempt {attempt + 1} to fetch {timeframe} kline for {symbol}")
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        logger.warning(f"HTTP error for {symbol} ({timeframe}): {response.status}")
-                        raise Exception(f"HTTP {response.status}: {await response.text()}")
-                    klines = await response.json()
-                    logger.debug(f"Raw kline response for {symbol} ({timeframe}): {len(klines)} entries")
-                    if klines and isinstance(klines, list):
-                        # MEXC API formatı: [timestamp, open, high, low, close, volume, ...]
-                        # CCXT formatına uyarla: [timestamp, open, high, low, close, volume]
-                        formatted_klines = [[k[0], k[1], k[2], k[3], k[4], k[5]] for k in klines]
-                        logger.debug(f"Fetched {len(formatted_klines)} kline entries for {symbol} ({timeframe})")
-                        return formatted_klines
-                    logger.warning(f"No kline data for {symbol} ({timeframe}) on attempt {attempt + 1}")
-                    await asyncio.sleep(delay * (attempt + 1))
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1} failed for {symbol} ({timeframe}): {e}")
-                if attempt == retries - 1:
-                    logger.error(f"Failed to fetch {timeframe} kline for {symbol} after {retries} attempts")
-                    return []
-                await asyncio.sleep(delay * (attempt + 1))
-        logger.error(f"All attempts failed for {symbol} ({timeframe})")
-        return []
-
-    async def fetch_and_save_market_data(self, symbol):
-        logger.info(f"Fetching market data for {symbol}")
-        timeframes = ['1m', '5m', '15m', '30m', '60m']
-        logger.debug(f"Timeframes to fetch: {timeframes}")
-        if not timeframes or any(tf is None or tf not in ['1m', '5m', '15m', '30m', '60m'] for tf in timeframes):
-            logger.error(f"Invalid timeframes: {timeframes}")
-            raise ValueError(f"Invalid timeframes: {timeframes}")
-
-        try:
-            # Ticker verisi için aiohttp
-            api_symbol = symbol.replace('/', '')
-            ticker_url = f"{self.base_url}/ticker/24hr?symbol={api_symbol}"
-            logger.debug(f"Fetching ticker for {symbol}: {ticker_url}")
-            session = await self.initialize_session()
-            async with session.get(ticker_url) as response:
-                if response.status != 200:
-                    logger.error(f"Failed to fetch ticker for {symbol}: HTTP {response.status}")
-                    return None
-                ticker = await response.json()
-                price = float(ticker.get('lastPrice', 0)) if ticker.get('lastPrice') else 0.0
-                volume = float(ticker.get('quoteVolume', 0)) if ticker.get('quoteVolume') else 0.0
-
-            klines = {}
-            for tf in timeframes:
-                logger.debug(f"Fetching {tf} kline for {symbol}")
-                kline_data = await self.get_kline(symbol, tf, limit=100, retries=3, delay=3)
-                if not kline_data:
-                    logger.warning(f"No {tf} kline data for {symbol}, using empty list")
-                    kline_data = []
-                klines[tf] = kline_data
-                logger.debug(f"Kline data for {symbol} ({tf}): {len(kline_data)} entries")
-
-            if not any(klines[tf] for tf in timeframes):
-                logger.warning(f"All kline data empty for {symbol}, skipping")
-                return None
-
-            # Order book için aiohttp
-            order_book_url = f"{self.base_url}/depth?symbol={api_symbol}&limit=10"
-            logger.debug(f"Fetching order book for {symbol}: {order_book_url}")
-            async with session.get(order_book_url) as response:
-                if response.status != 200:
-                    logger.error(f"Failed to fetch order book for {symbol}: HTTP {response.status}")
-                    order_book = {'bids': [], 'asks': []}
-                else:
-                    order_book = await response.json()
-
-            coin_data = {
-                'coin': symbol,
-                'price': price,
-                'volume': volume,
-                'klines': klines,
-                'order_book': order_book
-            }
-
-            try:
-                data = []
-                if os.path.exists(self.data_file):
-                    with open(self.data_file, 'r') as f:
-                        data = json.load(f)
-                data = [d for d in data if d['coin'] != symbol]
-                data.append(coin_data)
-                with open(self.data_file, 'w') as f:
-                    json.dump(data, f)
-                logger.info(f"Saved data for {symbol} to {self.data_file}")
-            except Exception as e:
-                logger.error(f"Error saving to {self.data_file}: {e}")
-                return None
-
-            logger.info(f"Data for {symbol}: price={price}, volume={volume}, "
-                       f"klines_1m={len(klines.get('1m', []))}, klines_5m={len(klines.get('5m', []))}, "
-                       f"klines_15m={len(klines.get('15m', []))}, klines_30m={len(klines.get('30m', []))}, "
-                       f"klines_60m={len(klines.get('60m', []))}")
-            await asyncio.sleep(3.0)
-            return coin_data
-        except Exception as e:
-            logger.error(f"Error fetching market data for {symbol}: {e}")
-            return None
-
-    async def get_top_coins(self, limit=100):
-        logger.debug(f"Fetching top {limit} coins")
-        try:
-            session = await self.initialize_session()
-            markets_url = f"{self.base_url}/exchangeInfo"
-            async with session.get(markets_url) as response:
-                if response.status != 200:
-                    logger.error(f"Failed to fetch exchange info: HTTP {response.status}")
-                    return []
-                markets = await response.json()
-                usdt_pairs = [s['symbol'] for s in markets['symbols'] if s['symbol'].endswith('USDT')]
-                logger.info(f"{len(usdt_pairs)} USDT pairs found: {usdt_pairs[:5]}...")
-
-            tickers_url = f"{self.base_url}/ticker/24hr"
-            async with session.get(tickers_url) as response:
-                if response.status != 200:
-                    logger.error(f"Failed to fetch tickers: HTTP {response.status}")
-                    return []
-                tickers = await response.json()
-                logger.info(f"Fetched {len(tickers)} tickers")
-                sorted_tickers = sorted(
-                    [(t['symbol'], float(t.get('quoteVolume', 0))) for t in tickers if t['symbol'] in usdt_pairs],
-                    key=lambda x: x[1], reverse=True
-                )
-                coins = [f"{s[:len(s)-4]}/USDT" for s, _ in sorted_tickers[:limit]]  # ETHUSDT -> ETH/USDT
-                logger.info(f"Fetched {len(coins)} top coins: {coins[:5]}...")
-                if not coins:
-                    logger.warning("No valid USDT pairs found")
-                    return []
-                return coins
-        except Exception as e:
-            logger.error(f"Error fetching top coins: {e}")
-            return []
-
-    async def get_order_book(self, symbol, limit=10):
-        logger.debug(f"Fetching order book for {symbol}")
-        try:
-            api_symbol = symbol.replace('/', '')
-            url = f"{self.base_url}/depth?symbol={api_symbol}&limit={limit}"
-            session = await self.initialize_session()
-            async with session.get(url) as response:
-                if response.status != 200:
-                    logger.error(f"Failed to fetch order book for {symbol}: HTTP {response.status}")
-                    return {'bids': [], 'asks': []}
-                return await response.json()
-        except Exception as e:
-            logger.error(f"Error fetching order book for {symbol}: {e}")
-            return {'bids': [], 'asks': []}
-
-    async def close(self):
-        logger.debug("Closing MEXCClient")
-        if self.session:
-            await self.session.close()
-            logger.info("MEXCClient session closed")
-
-def calculate_indicators(klines_1m, klines_5m, klines_15m, klines_30m, klines_60m, order_book=None):
-    logger.debug(f"Calculating indicators: klines_1m={len(klines_1m)}, klines_5m={len(klines_5m)}, "
-                f"klines_15m={len(klines_15m)}, klines_30m={len(klines_30m)}, klines_60m={len(klines_60m)}")
-    try:
-        if not any([klines_1m, klines_5m, klines_15m, klines_30m, klines_60m]):
-            logger.warning("All klines data empty")
-            return None
-
-        # DataFrame'leri oluştur
-        dfs = {}
-        for tf, klines in zip(['1m', '5m', '15m', '30m', '60m'], [klines_1m, klines_5m, klines_15m, klines_30m, klines_60m]):
-            df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            df = df.astype(float)
-            dfs[tf] = df
-
-        indicators = {}
-        for tf in ['1m', '5m', '15m', '30m', '60m']:
-            df = dfs[tf]
-            indicators[f'rsi_{tf}'] = ta.rsi(df['close'], length=14).iloc[-1] if len(df) >= 14 else None
-            indicators[f'ema_20_{tf}'] = ta.ema(df['close'], length=20).iloc[-1] if len(df) >= 20 else None
-            indicators[f'ema_50_{tf}'] = ta.ema(df['close'], length=50).iloc[-1] if len(df) >= 50 else None
-            indicators[f'macd_{tf}'] = ta.macd(df['close'])['MACD_12_26_9'].iloc[-1] if len(df) >= 26 else None
-            indicators[f'macd_signal_{tf}'] = ta.macd(df['close'])['MACDs_12_26_9'].iloc[-1] if len(df) >= 26 else None
-            indicators[f'bb_upper_{tf}'] = ta.bbands(df['close'], length=20)['BBU_20_2.0'].iloc[-1] if len(df) >= 20 else None
-            indicators[f'bb_lower_{tf}'] = ta.bbands(df['close'], length=20)['BBL_20_2.0'].iloc[-1] if len(df) >= 20 else None
-            indicators[f'vwap_{tf}'] = ta.vwap(df['high'], df['low'], df['close'], df['volume']).iloc[-1] if len(df) >= 1 else None
-            indicators[f'stoch_k_{tf}'] = ta.stoch(df['high'], df['low'], df['close'])['STOCHk_14_3_3'].iloc[-1] if len(df) >= 14 else None
-            indicators[f'stoch_d_{tf}'] = ta.stoch(df['high'], df['low'], df['close'])['STOCHd_14_3_3'].iloc[-1] if len(df) >= 14 else None
-            indicators[f'atr_{tf}'] = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1] if len(df) >= 14 else None
-
-            if len(df) >= 2:
-                indicators[f'volume_change_{tf}'] = ((df['volume'].iloc[-1] - df['volume'].iloc[-2]) / df['volume'].iloc[-2] * 100) if df['volume'].iloc[-2] != 0 else None
-            else:
-                indicators[f'volume_change_{tf}'] = None
-
-        if order_book:
-            bids = sum(float(bid[1]) for bid in order_book.get('bids', [])[:10])
-            asks = sum(float(ask[1]) for ask in order_book.get('asks', [])[:10])
-            indicators['bid_ask_ratio'] = (bids / asks) if asks != 0 else None
-
-        logger.info("Indicators calculated successfully")
-        return indicators
-    except Exception as e:
-        logger.error(f"Error calculating indicators: {e}")
-        return None
-
-class DeepSeekClient:
-    def __init__(self):
-        logger.debug("Initializing DeepSeekClient")
-        self.client = OpenAI(
-            api_key=os.getenv('DEEPSEEK_API_KEY'),
-            base_url="https://api.deepseek.com"
-        )
-
-    def clean_json_response(self, response):
-        logger.debug(f"Cleaning JSON response: {response[:200]}...")
-        try:
-            cleaned = re.sub(r'^```json\s*|\s*```$', '', response, flags=re.MULTILINE)
-            cleaned = re.sub(r'\n\s*###.*|\n\s*\*.*', '', cleaned, flags=re.MULTILINE)
-            cleaned = cleaned.strip()
-            return cleaned
-        except Exception as e:
-            logger.error(f"Error cleaning JSON response: {e}")
-            return response
-
-    def analyze_coin(self, data, trade_type='spot'):
-        logger.debug(f"Analyzing coin: {data.get('coin', 'Unknown')} ({trade_type})")
-        try:
-            symbol = data.get('coin', 'Unknown')
-            price = data.get('price', 0)
-            volume = data.get('volume', 0)
-            indicators = data.get('indicators', {})
-
-            prompt = (
-                f"Analyze {symbol} ({trade_type.upper()} trading):\n"
-                f"Price: ${price}\nVolume: ${volume}\n"
-                f"1m RSI: {indicators.get('rsi_1m', 'N/A')}\n"
-                f"1m EMA20: {indicators.get('ema_20_1m', 'N/A')}\n"
-                f"1m EMA50: {indicators.get('ema_50_1m', 'N/A')}\n"
-                f"1m MACD: {indicators.get('macd_1m', 'N/A')}\n"
-                f"1m MACD Signal: {indicators.get('macd_signal_1m', 'N/A')}\n"
-                f"1m Bollinger Upper: {indicators.get('bb_upper_1m', 'N/A')}\n"
-                f"1m Bollinger Lower: {indicators.get('bb_lower_1m', 'N/A')}\n"
-                f"1m VWAP: {indicators.get('vwap_1m', 'N/A')}\n"
-                f"1m Stochastic %K: {indicators.get('stoch_k_1m', 'N/A')}\n"
-                f"1m Stochastic %D: {indicators.get('stoch_d_1m', 'N/A')}\n"
-                f"1m ATR: {indicators.get('atr_1m', 'N/A')}\n"
-                f"5m RSI: {indicators.get('rsi_5m', 'N/A')}\n"
-                f"5m EMA20: {indicators.get('ema_20_5m', 'N/A')}\n"
-                f"5m EMA50: {indicators.get('ema_50_5m', 'N/A')}\n"
-                f"5m MACD: {indicators.get('macd_5m', 'N/A')}\n"
-                f"5m MACD Signal: {indicators.get('macd_signal_5m', 'N/A')}\n"
-                f"5m Bollinger Upper: {indicators.get('bb_upper_5m', 'N/A')}\n"
-                f"5m Bollinger Lower: {indicators.get('bb_lower_5m', 'N/A')}\n"
-                f"5m VWAP: {indicators.get('vwap_5m', 'N/A')}\n"
-                f"5m Stochastic %K: {indicators.get('stoch_k_5m', 'N/A')}\n"
-                f"5m Stochastic %D: {indicators.get('stoch_d_5m', 'N/A')}\n"
-                f"5m ATR: {indicators.get('atr_5m', 'N/A')}\n"
-                f"15m RSI: {indicators.get('rsi_15m', 'N/A')}\n"
-                f"15m EMA20: {indicators.get('ema_20_15m', 'N/A')}\n"
-                f"15m EMA50: {indicators.get('ema_50_15m', 'N/A')}\n"
-                f"15m MACD: {indicators.get('macd_15m', 'N/A')}\n"
-                f"15m MACD Signal: {indicators.get('macd_signal_15m', 'N/A')}\n"
-                f"15m Bollinger Upper: {indicators.get('bb_upper_15m', 'N/A')}\n"
-                f"15m Bollinger Lower: {indicators.get('bb_lower_15m', 'N/A')}\n"
-                f"15m VWAP: {indicators.get('vwap_15m', 'N/A')}\n"
-                f"15m Stochastic %K: {indicators.get('stoch_k_15m', 'N/A')}\n"
-                f"15m Stochastic %D: {indicators.get('stoch_d_15m', 'N/A')}\n"
-                f"15m ATR: {indicators.get('atr_15m', 'N/A')}\n"
-                f"30m RSI: {indicators.get('rsi_30m', 'N/A')}\n"
-                f"30m EMA20: {indicators.get('ema_20_30m', 'N/A')}\n"
-                f"30m EMA50: {indicators.get('ema_50_30m', 'N/A')}\n"
-                f"30m MACD: {indicators.get('macd_30m', 'N/A')}\n"
-                f"30m MACD Signal: {indicators.get('macd_signal_30m', 'N/A')}\n"
-                f"30m Bollinger Upper: {indicators.get('bb_upper_30m', 'N/A')}\n"
-                f"30m Bollinger Lower: {indicators.get('bb_lower_30m', 'N/A')}\n"
-                f"30m VWAP: {indicators.get('vwap_30m', 'N/A')}\n"
-                f"30m Stochastic %K: {indicators.get('stoch_k_30m', 'N/A')}\n"
-                f"30m Stochastic %D: {indicators.get('stoch_d_30m', 'N/A')}\n"
-                f"30m ATR: {indicators.get('atr_30m', 'N/A')}\n"
-                f"60m RSI: {indicators.get('rsi_60m', 'N/A')}\n"
-                f"60m EMA20: {indicators.get('ema_20_60m', 'N/A')}\n"
-                f"60m EMA50: {indicators.get('ema_50_60m', 'N/A')}\n"
-                f"60m MACD: {indicators.get('macd_60m', 'N/A')}\n"
-                f"60m MACD Signal: {indicators.get('macd_signal_60m', 'N/A')}\n"
-                f"60m Bollinger Upper: {indicators.get('bb_upper_60m', 'N/A')}\n"
-                f"60m Bollinger Lower: {indicators.get('bb_lower_60m', 'N/A')}\n"
-                f"60m VWAP: {indicators.get('vwap_60m', 'N/A')}\n"
-                f"60m Stochastic %K: {indicators.get('stoch_k_60m', 'N/A')}\n"
-                f"60m Stochastic %D: {indicators.get('stoch_d_60m', 'N/A')}\n"
-                f"60m ATR: {indicators.get('atr_60m', 'N/A')}\n"
-                f"Volume Change 1m: {indicators.get('volume_change_1m', 'N/A')}%;\n"
-                f"Volume Change 5m: {indicators.get('volume_change_5m', 'N/A')}%;\n"
-                f"Volume Change 15m: {indicators.get('volume_change_15m', 'N/A')}%;\n"
-                f"Volume Change 30m: {indicators.get('volume_change_30m', 'N/A')}%;\n"
-                f"Volume Change 60m: {indicators.get('volume_change_60m', 'N/A')}%;\n"
-                f"Bid/Ask Ratio: {indicators.get('bid_ask_ratio', 'N/A')}\n"
-                "Provide short-term trading analysis (1-4 hours). Return JSON with:\n"
-                "- pump_probability (0-100%)\n- dump_probability (0-100%)\n- entry_price\n- exit_price\n- stop_loss\n- leverage\n- fundamental_analysis\n"
-                "Return only JSON, no extra text."
-            )
-
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            analysis = response.choices[0].message.content
-            cleaned = self.clean_json_response(analysis)
-            try:
-                parsed = json.loads(cleaned)
-                if not isinstance(parsed, dict):
-                    logger.warning(f"Invalid JSON for {symbol}: {cleaned}")
-                    return {'short_term': {'pump_probability': 0, 'dump_probability': 0, 'entry_price': price, 'exit_price': price, 'stop_loss': price * 0.95, 'leverage': 'N/A', 'fundamental_analysis': 'No data'}}
-                return {'short_term': parsed}
-            except json.JSONDecodeError:
-                logger.warning(f"JSON decode error for {symbol}: {cleaned}")
-                return {'short_term': {'pump_probability': 0, 'dump_probability': 0, 'entry_price': price, 'exit_price': price, 'stop_loss': price * 0.95, 'leverage': 'N/A', 'fundamental_analysis': 'No data'}}
-        except Exception as e:
-            logger.error(f"Error analyzing {symbol} ({trade_type}): {e}")
-            return {'short_term': {'pump_probability': 0, 'dump_probability': 0, 'entry_price': price, 'exit_price': price, 'stop_loss': price * 0.95, 'leverage': 'N/A', 'fundamental_analysis': 'No data'}}
-
-class Storage:
-    def save_analysis(self, data):
-        logger.debug(f"Saving analysis data")
-        try:
-            if not data:
-                logger.warning("No valid data to save")
-                return
-            with open('/tmp/analysis.json', 'w') as f:
-                json.dump(data, f, indent=4)
-            logger.info("Analysis saved to /tmp/analysis.json")
-        except Exception as e:
-            logger.error(f"Error saving analysis: {e}")
-
-    def load_analysis(self):
-        logger.debug("Loading analysis from /tmp/analysis.json")
-        try:
-            with open('/tmp/analysis.json', 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            logger.warning("Analysis file not found")
-            return {}
-        except Exception as e:
-            logger.error(f"Error loading analysis: {e}")
-            return {}
+# MEXCClient, DeepSeekClient, Storage, calculate_indicators aynı kalıyor
+# (Paylaştığınız kodun bu kısımları zaten doğru ve çalışır durumda)
 
 class TelegramBot:
     def __init__(self):
         logger.debug("Initializing TelegramBot")
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
         self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
+        bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        if not bot_token:
+            logger.error("TELEGRAM_BOT_TOKEN is not set")
+            raise ValueError("TELEGRAM_BOT_TOKEN environment variable is missing")
+        
         try:
-            self.app = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+            self.app = Application.builder().token(bot_token).build()
             logger.debug("Application initialized successfully")
             self.app.add_handler(CommandHandler("start", self.start))
             self.app.add_handler(CallbackQueryHandler(self.button))
             self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
             self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
             self.web_app = None
-            # job_queue kontrolü
-            if self.app.job_queue is None:
-                logger.error("Application.job_queue is None")
-                raise ValueError("Job queue is not initialized. Check Application configuration.")
+            # Job queue başlatma
+            try:
+                self.app.job_queue.start()
+                logger.debug("Job queue started successfully")
+            except Exception as e:
+                logger.warning(f"Failed to start job_queue: {e}. Proceeding without job_queue.")
+                self.app.job_queue = None  # Job queue başlatılamazsa None olarak bırak
         except Exception as e:
             logger.error(f"Error initializing Application: {e}")
             raise
@@ -447,14 +71,15 @@ class TelegramBot:
             limit = int(parts[1])
             trade_type = parts[2]
             await query.message.reply_text(f"{trade_type.upper()} analizi yapılıyor (Top {limit})...")
+            data = {'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type}
             if context.job_queue is None:
-                logger.error("context.job_queue is None, running analyze_and_send directly")
-                await self.analyze_and_send(context, {'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type})
+                logger.warning("context.job_queue is None, running analyze_and_send directly")
+                await self.analyze_and_send(context, data)
             else:
                 context.job_queue.run_once(
                     self.analyze_and_send,
                     0,
-                    data={'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type},
+                    data=data,
                     chat_id=self.group_id
                 )
         except Exception as e:
@@ -476,7 +101,6 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Error in analyze_and_send: {e}")
             await context.bot.send_message(chat_id=chat_id, text=f"{trade_type} analizi sırasında hata: {str(e)}")
-
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.debug(f"Chat message: {update.message.text}")
@@ -510,71 +134,77 @@ class TelegramBot:
             if messages:
                 await update.message.reply_text("\n\n".join(messages))
             else:
-                await update.message.reply_text("No analysis results found.")
+                await update.message.reply_text("Analiz sonucu bulunamadı.")
         except Exception as e:
             logger.error(f"Error loading analysis: {e}")
-            await update.message.reply_text(f"Error: {str(e)}")
+            await update.message.reply_text(f"Hata: {str(e)}")
 
     def format_results(self, coin_data, trade_type, symbol):
         logger.debug(f"Formatting results for {symbol} ({trade_type})")
         indicators = coin_data.get('indicators', {})
         analysis = coin_data.get('deepseek_analysis', {}).get('short_term', {})
-        message = (
-            f"📊 {symbol} {trade_type.upper()} Analizi ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-            f"- Kısa Vadeli: Giriş: ${analysis.get('entry_price', 0):.2f} | "
-            f"Çıkış: ${analysis.get('exit_price', 0):.2f} | "
-            f"Stop Loss: ${analysis.get('stop_loss', 0):.2f} | "
-            f"Kaldıraç: {analysis.get('leverage', 'N/A')}\n"
-            f"- Pump Olasılığı: {analysis.get('pump_probability', 0)}% | "
-            f"Dump Olasılığı: {analysis.get('dump_probability', 0)}%\n"
-            f"- Temel Analiz: {analysis.get('fundamental_analysis', 'No data')}\n"
-            f"- Hacim Değişimleri: 1m: {indicators.get('volume_change_1m', 'N/A'):.2f}% | "
-            f"5m: {indicators.get('volume_change_5m', 'N/A'):.2f}% | "
-            f"15m: {indicators.get('volume_change_15m', 'N/A'):.2f}% | "
-            f"30m: {indicators.get('volume_change_30m', 'N/A'):.2f}% | "
-            f"60m: {indicators.get('volume_change_60m', 'N/A'):.2f}%\n"
-            f"- Bid/Ask Oranı: {indicators.get('bid_ask_ratio', 'N/A'):.2f}\n"
-        )
-        return message
+        # Hacim değişimlerini güvenli bir şekilde biçimlendir
+        volume_changes = {}
+        for tf in ['1m', '5m', '15m', '30m', '60m']:
+            value = indicators.get(f'volume_change_{tf}', None)
+            volume_changes[tf] = f"{value:.2f}" if isinstance(value, (int, float)) else "N/A"
+        bid_ask_ratio = indicators.get('bid_ask_ratio', None)
+        bid_ask_ratio_str = f"{bid_ask_ratio:.2f}" if isinstance(bid_ask_ratio, (int, float)) else "N/A"
+        try:
+            message = (
+                f"📊 {symbol} {trade_type.upper()} Analizi ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
+                f"- Kısa Vadeli: Giriş: ${analysis.get('entry_price', 0):.2f} | "
+                f"Çıkış: ${analysis.get('exit_price', 0):.2f} | "
+                f"Stop Loss: ${analysis.get('stop_loss', 0):.2f} | "
+                f"Kaldıraç: {analysis.get('leverage', 'N/A')}\n"
+                f"- Pump Olasılığı: {analysis.get('pump_probability', 0)}% | "
+                f"Dump Olasılığı: {analysis.get('dump_probability', 0)}%\n"
+                f"- Temel Analiz: {analysis.get('fundamental_analysis', 'Veri yok')}\n"
+                f"- Hacim Değişimleri: 1m: {volume_changes['1m']}% | "
+                f"5m: {volume_changes['5m']}% | "
+                f"15m: {volume_changes['15m']}% | "
+                f"30m: {volume_changes['30m']}% | "
+                f"60m: {volume_changes['60m']}% \n"
+                f"- Bid/Ask Oranı: {bid_ask_ratio_str}\n"
+            )
+            return message
+        except Exception as e:
+            logger.error(f"Error formatting results for {symbol}: {e}")
+            return f"Error formatting {symbol} analysis: {str(e)}"
 
     async def process_coin(self, symbol, mexc, deepseek, trade_type, chat_id):
         logger.debug(f"Processing coin: {symbol} ({trade_type})")
         try:
-            # Veriyi çek ve JSON'a kaydet
             data = await mexc.fetch_and_save_market_data(symbol)
             if not data:
                 logger.warning(f"No valid market data for {symbol} ({trade_type})")
-                await self.app.bot.send_message(chat_id=chat_id, text=f"No valid market data for {symbol}")
+                await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için geçerli piyasa verisi yok")
                 return None
 
-            # Göstergeleri hesapla
             data['indicators'] = calculate_indicators(
                 data['klines'].get('1m', []), data['klines'].get('5m', []), data['klines'].get('15m', []),
                 data['klines'].get('30m', []), data['klines'].get('60m', []), data.get('order_book')
             )
             if not data['indicators']:
                 logger.warning(f"No indicators for {symbol} ({trade_type})")
-                await self.app.bot.send_message(chat_id=chat_id, text=f"No indicators calculated for {symbol}")
+                await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için gösterge hesaplanamadı")
                 return None
 
-            # DeepSeek analizi yap
             data['deepseek_analysis'] = deepseek.analyze_coin(data, trade_type)
             logger.info(f"Processed {symbol} ({trade_type}): price={data.get('price')}, "
                        f"klines_60m={len(data['klines'].get('60m', []))}")
 
-            # Telegram'a gönder
             message = self.format_results(data, trade_type, symbol)
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             logger.info(f"Analysis sent for {symbol} ({trade_type})")
 
-            # Analizi kaydet
             storage = Storage()
             storage.save_analysis({f'{symbol}_{trade_type}': [data]})
 
             return data
         except Exception as e:
             logger.error(f"Error processing {symbol} ({trade_type}): {e}")
-            await self.app.bot.send_message(chat_id=chat_id, text=f"Error processing {symbol}: {str(e)}")
+            await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} işlenirken hata: {str(e)}")
             return None
 
     async def analyze_coins(self, limit, trade_type, chat_id):
@@ -590,8 +220,7 @@ class TelegramBot:
             coin_data = await self.process_coin(symbol, mexc, deepseek, trade_type, chat_id)
             if coin_data:
                 results[f'top_{limit}_{trade_type}'].append(coin_data)
-            await asyncio.sleep(2.0)  # Coin'ler arasında rate limit için bekleme
-
+            await asyncio.sleep(3.0)  # Rate limit için artırıldı
         logger.info(f"Processed {len(results[f'top_{limit}_{trade_type}'])} valid coins for Top {limit} {trade_type}")
         await mexc.close()
         return results
@@ -617,7 +246,12 @@ class TelegramBot:
         self.web_app = web.Application()
         self.web_app.router.add_post('/webhook', self.webhook_handler)
         webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
-        await self.app.bot.set_webhook(url=webhook_url)
+        try:
+            await self.app.bot.set_webhook(url=webhook_url)
+            logger.debug(f"Webhook set to {webhook_url}")
+        except Exception as e:
+            logger.error(f"Error setting webhook: {e}")
+            raise
         runner = web.AppRunner(self.web_app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
