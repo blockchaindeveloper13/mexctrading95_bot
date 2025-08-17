@@ -129,7 +129,7 @@ class TelegramBot:
     async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.debug("Show analysis command received")
         try:
-            with open('analysis.json', 'r') as f:
+            with open('/tmp/analysis.json', 'r') as f:  # Heroku için /tmp
                 data = json.load(f)
             logger.debug(f"Loaded analysis data: {data}")
             message_spot = self.format_results(data, 'spot')
@@ -181,7 +181,7 @@ class TelegramBot:
                     f"- Pump Olasılığı: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('pump_probability', 0)}% | "
                     f"Dump Olasılığı: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('dump_probability', 0)}%\n"
                     f"- Temel Analiz: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('fundamental_analysis', 'No data')}\n"
-                    f"- Hacim Değişimleri: 1h: {indicators.get('volume_change_1h', 'N/A'):.2f}% | "
+                    f"- Hacim Değişimleri: 60m: {indicators.get('volume_change_60m', 'N/A'):.2f}% | "
                     f"3h: {indicators.get('volume_change_3h', 'N/A'):.2f}% | "
                     f"6h: {indicators.get('volume_change_6h', 'N/A'):.2f}% | "
                     f"24h: {indicators.get('volume_change_24h', 'N/A'):.2f}%\n"
