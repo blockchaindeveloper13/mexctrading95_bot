@@ -30,7 +30,9 @@ class MEXCClient:
                 key=lambda x: x[1],
                 reverse=True
             )
-            return [symbol for symbol, _ in sorted_tickers[:limit]]
+            coins = [symbol for symbol, _ in sorted_tickers[:limit]]
+            logger.info(f"Fetched {len(coins)} top coins: {coins[:5]}...")  # İlk 5 coin’i logla
+            return coins
         except Exception as e:
             logger.error(f"Error fetching top coins: {e}")
             return []
@@ -41,14 +43,16 @@ class MEXCClient:
             klines_4h = await self.exchange.fetch_ohlcv(symbol, '4h', limit=100)
             ticker = await self.exchange.fetch_ticker(symbol)
             order_book = await self.exchange.fetch_order_book(symbol, limit=10)
-            return {
+            data = {
                 'coin': symbol,
-                'price': ticker['last'],
-                'volume': ticker['quoteVolume'],
+                'price': ticker.get('last', 0),
+                'volume': ticker.get('quoteVolume', 0),
                 'klines_1h': klines_1h,
                 'klines_4h': klines_4h,
                 'order_book': order_book
             }
+            logger.info(f"Fetched market data for {symbol}: price={data['price']}, volume={data['volume']}")
+            return data
         except Exception as e:
             logger.error(f"Error fetching market data for {symbol}: {e}")
             return None
