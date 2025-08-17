@@ -19,19 +19,27 @@ class MEXCClient:
 
     async def get_top_coins(self, limit):
         try:
+            # Market verilerini çek
             markets = await self.exchange.load_markets()
+            logger.info(f"Loaded {len(markets)} markets")
             tickers = await self.exchange.fetch_tickers()
+            logger.info(f"Fetched {len(tickers)} tickers")
+            
+            # USDT çiftlerini filtrele
             usdt_pairs = [
                 symbol for symbol, market in markets.items()
-                if symbol.endswith('/USDT') and market.get('active', False) and market.get('spot', True)
+                if symbol.endswith('/USDT') and market.get('active', False)
             ]
+            logger.info(f"Found {len(usdt_pairs)} USDT pairs: {usdt_pairs[:5]}...")
+            
+            # Hacme göre sırala
             sorted_tickers = sorted(
-                [(symbol, tickers[symbol]['quoteVolume']) for symbol in usdt_pairs if symbol in tickers],
+                [(symbol, tickers[symbol].get('quoteVolume', 0)) for symbol in usdt_pairs if symbol in tickers],
                 key=lambda x: x[1],
                 reverse=True
             )
             coins = [symbol for symbol, _ in sorted_tickers[:limit]]
-            logger.info(f"Fetched {len(coins)} top coins: {coins[:5]}...")  # İlk 5 coin’i logla
+            logger.info(f"Fetched {len(coins)} top coins: {coins[:5]}...")
             if not coins:
                 logger.warning("No USDT pairs found or all pairs inactive")
             return coins
