@@ -18,13 +18,13 @@ class MEXCClient:
             'secret': os.getenv('MEXC_API_SECRET'),
             'enableRateLimit': True,
             'options': {
-                'defaultTimeframe': '60m',  # MEXC API v3 için doğru format
+                'defaultTimeframe': '1h',  # Varsayılan zaman dilimini 1h yap
                 'timeframes': {
                     '1m': '1m',
                     '5m': '5m',
                     '15m': '15m',
                     '30m': '30m',
-                    '1h': '60m',  # 1 saat = 60 dakika
+                    '1h': '1h',  # 60m yerine 1h
                     '4h': '4h',
                     '1d': '1d',
                 }
@@ -32,7 +32,7 @@ class MEXCClient:
         })
         self.data_file = os.getenv('MARKET_DATA_FILE', 'market_data.json')
 
-    async def fetch_and_save_market_data(self, symbols, timeframes=['60m', '4h']):  # '1h' yerine '60m' kullanın
+    async def fetch_and_save_market_data(self, symbols, timeframes=['1h', '4h']):  # 60m yerine 1h
         market_data = []
         for symbol in symbols:
             try:
@@ -57,7 +57,6 @@ class MEXCClient:
                 }
                 market_data.append(data)
                 
-                # Log bilgilerini daha detaylı hale getirdim
                 log_msg = f"Fetched market data for {symbol}: price={data['price']}, volume={data['volume']}"
                 for tf in timeframes:
                     log_msg += f", klines_{tf}={len(klines.get(tf, []))}"
@@ -68,7 +67,6 @@ class MEXCClient:
                 logger.error(f"Error fetching market data for {symbol}: {e}")
                 continue
         
-        # Verileri market_data.json'a kaydet
         try:
             with open(self.data_file, 'w') as f:
                 json.dump(market_data, f, indent=2)
@@ -78,21 +76,17 @@ class MEXCClient:
         
         return market_data
 
-    async def get_top_coins(self, limit=10, timeframes=['60m', '4h']):
+    async def get_top_coins(self, limit=10, timeframes=['1h', '4h']):  # 60m yerine 1h
         try:
-            # Market verilerini çek
             markets = await self.exchange.load_markets()
             logger.info(f"Loaded {len(markets)} markets")
             
-            # USDT çiftlerini filtrele
             usdt_pairs = [symbol for symbol in markets if symbol.endswith('/USDT')]
             logger.info(f"Found {len(usdt_pairs)} USDT pairs (first 5): {usdt_pairs[:5]}...")
             
-            # Ticker verilerini çek
             tickers = await self.exchange.fetch_tickers()
             logger.info(f"Fetched {len(tickers)} tickers")
             
-            # Hacme göre sırala
             sorted_tickers = sorted(
                 [(symbol, tickers[symbol].get('quoteVolume', 0)) for symbol in usdt_pairs if symbol in tickers],
                 key=lambda x: x[1],
@@ -105,20 +99,17 @@ class MEXCClient:
                 logger.warning("No valid USDT pairs found in tickers")
                 return []
             
-            # Seçilen coinler için market verilerini çek ve kaydet
             await self.fetch_and_save_market_data(coins, timeframes)
             return coins
         except Exception as e:
             logger.error(f"Error fetching top coins: {e}")
             return []
 
-    async def get_market_data(self, symbol, timeframes=['60m', '4h']):
+    async def get_market_data(self, symbol, timeframes=['1h', '4h']):  # 60m yerine 1h
         try:
-            # JSON dosyasından verileri oku
             with open(self.data_file, 'r') as f:
                 market_data = json.load(f)
             
-            # İlgili coin'in verisini bul
             for item in market_data:
                 if item['coin'] == symbol:
                     data = {
@@ -129,7 +120,6 @@ class MEXCClient:
                         'order_book': item.get('order_book', {'bids': [], 'asks': []})
                     }
                     
-                    # Log bilgilerini güncelledim
                     log_msg = f"Fetched market data for {symbol} from JSON: price={data['price']}, volume={data['volume']}"
                     for tf in timeframes:
                         log_msg += f", klines_{tf}={len(data['klines'].get(tf, []))}"
