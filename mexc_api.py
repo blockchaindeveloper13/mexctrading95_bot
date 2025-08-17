@@ -1,5 +1,5 @@
 import os
-import ccxt.async_support as ccxt
+import json
 import logging
 from dotenv import load_dotenv
 
@@ -11,66 +11,65 @@ load_dotenv()
 
 class MEXCClient:
     def __init__(self):
-        self.exchange = ccxt.mexc3({
-            'apiKey': os.getenv('MEXC_API_KEY'),
-            'secret': os.getenv('MEXC_API_SECRET'),
-            'enableRateLimit': True
-        })
+        # API kullanılmayacak, ama yapı korunsun
+        self.data_file = os.getenv('MARKET_DATA_FILE', 'market_data.json')
 
     async def get_top_coins(self, limit):
         try:
-            # Market verilerini çek
-            markets = await self.exchange.load_markets()
-            logger.info(f"Loaded {len(markets)} markets")
-            
-            # Tüm market sembollerini ve örnek market yapısını logla
-            all_symbols = list(markets.keys())
-            logger.debug(f"All market symbols (first 10): {all_symbols[:10]}")
-            if all_symbols:
-                logger.debug(f"Sample market data for {all_symbols[0]}: {markets[all_symbols[0]]}")
+            # JSON dosyasından verileri oku
+            with open(self.data_file, 'r') as f:
+                market_data = json.load(f)
             
             # USDT çiftlerini filtrele
-            usdt_pairs = [symbol for symbol in markets if symbol.endswith('/USDT')]
+            usdt_pairs = [item['coin'] for item in market_data if item['coin'].endswith('/USDT')]
             logger.info(f"Found {len(usdt_pairs)} USDT pairs (first 5): {usdt_pairs[:5]}...")
             
-            # Ticker verilerini çek
-            tickers = await self.exchange.fetch_tickers()
-            logger.info(f"Fetched {len(tickers)} tickers")
-            
             # Hacme göre sırala
-            sorted_tickers = sorted(
-                [(symbol, tickers[symbol].get('quoteVolume', 0)) for symbol in usdt_pairs if symbol in tickers],
+            sorted_pairs = sorted(
+                [(item['coin'], item.get('volume', 0)) for item in market_data if item['coin'] in usdt_pairs],
                 key=lambda x: x[1],
                 reverse=True
             )
-            coins = [symbol for symbol, _ in sorted_tickers[:limit]]
+            coins = [symbol for symbol, _ in sorted_pairs[:limit]]
             logger.info(f"Fetched {len(coins)} top coins: {coins[:5]}...")
             if not coins:
-                logger.warning("No valid USDT pairs found in tickers")
+                logger.warning("No valid USDT pairs found in data file")
             return coins
+        except FileNotFoundError:
+            logger.error(f"Market data file not found: {self.data_file}")
+            return []
         except Exception as e:
-            logger.error(f"Error fetching top coins: {e}")
+            logger.error(f"Error fetching top coins from data file: {e}")
             return []
 
     async def get_market_data(self, symbol):
         try:
-            klines_1h = await self.exchange.fetch_ohlcv(symbol, '1h', limit=100)
-            klines_4h = await self.exchange.fetch_ohlcv(symbol, '4h', limit=100)
-            ticker = await self.exchange.fetch_ticker(symbol)
-            order_book = await self.exchange.fetch_order_book(symbol, limit=10)
-            data = {
-                'coin': symbol,
-                'price': ticker.get('last', 0),
-                'volume': ticker.get('quoteVolume', 0),
-                'klines_1h': klines_1h,
-                'klines_4h': klines_4h,
-                'order_book': order_book
-            }
-            logger.info(f"Fetched market data for {symbol}: price={data['price']}, volume={data['volume']}, klines_1h={len(klines_1h)}, klines_4h={len(klines_4h)}, order_book_bids={len(order_book.get('bids', []))}")
-            return data
+            # JSON dosyasından verileri oku
+            with open(self.data_file, 'r') as f:
+                market_data = json.load(f)
+            
+            # İlgili coin’in verisini bul
+            for item in market_data:
+                if item['coin'] == symbol:
+                    data = {
+                        'coin': symbol,
+                        'price': item.get('price', 0),
+                        'volume': item.get('volume', 0),
+                        'klines_1h': item.get('klines_1h', []),
+                        'klines_4h': item.get('klines_4h', []),
+                        'order_book': item.get('order_book', {'bids': [], 'asks': []})
+                    }
+                    logger.info(f"Fetched market data for {symbol}: price={data['price']}, volume={data['volume']}, klines_1h={len(data['klines_1h'])}, klines_4h={len(data['klines_4h'])}, order_book_bids={len(data['order_book'].get('bids', []))}")
+                    return data
+            logger.warning(f"No data found for {symbol} in data file")
+            return None
+        except FileNotFoundError:
+            logger.error(f"Market data file not found: {self.data_file}")
+            return None
         except Exception as e:
-            logger.error(f"Error fetching market data for {symbol}: {e}")
+            logger.error(f"Error fetching market data for {symbol} from data file: {e}")
             return None
 
     async def close(self):
-        await self.exchange.close()
+        # JSON kullanıldığı için bağlantı kapatma gerekmez
+        logger.info("Closing MEXCClient (no-op for JSON data)")
