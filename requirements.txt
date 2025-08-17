@@ -1,6 +1,7 @@
 ccxt==2.9.5
-ta-lib==0.4.24
 pandas-ta==0.3.14b
 openai==1.10.0
 python-telegram-bot==20.7
 python-dotenv==1.0.0
+numpy==2.2.6
+pandas==2.3.1
