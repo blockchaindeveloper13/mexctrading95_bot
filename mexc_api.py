@@ -32,6 +32,8 @@ class MEXCClient:
             )
             coins = [symbol for symbol, _ in sorted_tickers[:limit]]
             logger.info(f"Fetched {len(coins)} top coins: {coins[:5]}...")  # İlk 5 coin’i logla
+            if not coins:
+                logger.warning("No USDT pairs found or all pairs inactive")
             return coins
         except Exception as e:
             logger.error(f"Error fetching top coins: {e}")
@@ -51,7 +53,7 @@ class MEXCClient:
                 'klines_4h': klines_4h,
                 'order_book': order_book
             }
-            logger.info(f"Fetched market data for {symbol}: price={data['price']}, volume={data['volume']}")
+            logger.info(f"Fetched market data for {symbol}: price={data['price']}, volume={data['volume']}, klines_1h={len(klines_1h)}, klines_4h={len(klines_4h)}, order_book_bids={len(order_book.get('bids', []))}")
             return data
         except Exception as e:
             logger.error(f"Error fetching market data for {symbol}: {e}")
