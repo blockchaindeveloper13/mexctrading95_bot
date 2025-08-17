@@ -114,7 +114,7 @@ class DeepSeekClient:
             resistance = float(re.search(r'Resistance Level: (\d+\.?\d*)', text).group(1)) if re.search(r'Resistance Level: (\d+\.?\d*)', text) else current_price * 1.05
             risk_reward = float(re.search(r'Risk/Reward Ratio: (\d+\.?\d*)', text).group(1)) if re.search(r'Risk/Reward Ratio: (\d+\.?\d*)', text) else (exit_price - entry_price) / (entry_price - stop_loss) if entry_price > stop_loss else 1.0
             fundamental = re.search(r'Fundamental Analysis: (.+?)(?:\n|$)', text).group(1)[:500] if re.search(r'Fundamental Analysis: (.+?)(?:\n|$)', text) else text[:500]
-            comment = re.search(r'Comment: (.+?)(?:\n|$)', text).group(1)[:500] if re.search(r'Comment: (.+?)(?:\n|$)', text) else "No specific comment provided."
+            comment = re.search(r'Comment: (.+?)(?:\n|$)', text).group(1)[:500] if re.search(r'Comment: (.+?)(?:\n|$)', text) else "Hold: Insufficient signals for strong buy or sell. Monitor for volume increase."
             return {
                 'entry_price': entry_price,
                 'exit_price': exit_price,
@@ -143,7 +143,7 @@ class DeepSeekClient:
                 'resistance_level': current_price * 1.05,
                 'risk_reward_ratio': 1.0,
                 'fundamental_analysis': 'Parse başarısız',
-                'comment': 'No specific comment provided.'
+                'comment': 'Hold: Insufficient signals for strong buy or sell. Monitor for volume increase.'
             }
 
     def analyze_coin(self, symbol, data, trade_type):
@@ -184,7 +184,7 @@ class DeepSeekClient:
             - Resistance Level: <specific price in USDT>
             - Risk/Reward Ratio: <e.g., 2.0>
             - Fundamental Analysis: <detailed summary, max 500 characters, include volume trends, market sentiment, and buying/selling pressure>
-            - Comment: <overall trading recommendation, e.g., buy/sell/hold, with reasoning based on indicators>
+            - Comment: <specific trading recommendation (Buy/Sell/Hold) with detailed reasoning based on indicators, max 500 characters>
             """
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
@@ -208,7 +208,7 @@ class DeepSeekClient:
                     'resistance_level': data['price'] * 1.05,
                     'risk_reward_ratio': 1.0,
                     'fundamental_analysis': 'Analiz başarısız',
-                    'comment': 'No specific comment provided.'
+                    'comment': 'Hold: Insufficient signals for strong buy or sell. Monitor for volume increase.'
                 }
             }
 
@@ -399,10 +399,9 @@ class TelegramBot:
                 await update.message.reply_text("Sembol USDT çifti olmalı. Örnek: /analyze BTCUSDT")
                 return
 
-            # Aynı sembol için çalışan analiz kontrolü
-            analysis_key = f"{symbol}_{trade_type}"
+            analysis_key = f"{symbol}_{trade_type}_{update.effective_chat.id}"
             if analysis_key in self.active_analyses:
-                await update.message.reply_text(f"{symbol} için analiz zaten yapılıyor, lütfen bekleyin.")
+                await update.message.reply_text(f"{symbol} için {trade_type} analizi zaten yapılıyor, lütfen bekleyin.")
                 return
             self.active_analyses[analysis_key] = True
 
@@ -592,7 +591,7 @@ class TelegramBot:
         logger.info(f"{len(coins)} coin analiz ediliyor: {coins[:5]}...")
 
         for symbol in coins:
-            analysis_key = f"{symbol}_{trade_type}"
+            analysis_key = f"{symbol}_{trade_type}_{chat_id}"
             if analysis_key in self.active_analyses:
                 logger.info(f"{symbol} için analiz zaten yapılıyor, atlanıyor")
                 continue
