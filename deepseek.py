@@ -1,7 +1,11 @@
 from openai import OpenAI
-from dotenv import load_dotenv
 import os
-import json
+import logging
+from dotenv import load_dotenv
+
+# Loglama ayarları
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -14,49 +18,62 @@ class DeepSeekClient:
 
     def analyze_coin(self, data):
         try:
-            prompt = f"""
-            Aşağıdaki verilere göre coin’in kısa ve uzun vadeli fiyat hareketlerini analiz et:
-            - Coin: {data['symbol']}
-            - 24h Hacim Değişimi: {data['volume_change']}%
-            - Fiyat Değişimi: {data['price_change']}%
-            - Alış/Satış Oranı: {data['bid_ask_ratio']}
-            - Kısa Vadeli (1h): RSI: {data['indicators']['short_term'].get('rsi', 0)}, Stochastic: {data['indicators']['short_term'].get('stoch_k', 0)}, MA 50: {data['indicators']['short_term'].get('ma_50', 0)}, EMA 12: {data['indicators']['short_term'].get('ema_12', 0)}, MACD: {data['indicators']['short_term'].get('macd', 0)}, Bollinger: {data['indicators']['short_term'].get('upper_band', 0)}, KDJ: {data['indicators']['short_term'].get('kdj', 0)}, SAR: {data['indicators']['short_term'].get('sar', 0)}, AVL: {data['indicators']['short_term'].get('avl', 0)}, Volume: {data['indicators']['short_term'].get('volume', 0)}, OBV: {data['indicators']['short_term'].get('obv', 0)}, WR: {data['indicators']['short_term'].get('wr', 0)}
-            - Uzun Vadeli (4h): RSI: {data['indicators']['long_term'].get('rsi', 0)}, Stochastic: {data['indicators']['long_term'].get('stoch_k', 0)}, MA 50: {data['indicators']['long_term'].get('ma_50', 0)}, EMA 12: {data['indicators']['long_term'].get('ema_12', 0)}, MACD: {data['indicators']['long_term'].get('macd', 0)}, Bollinger: {data['indicators']['long_term'].get('upper_band', 0)}, KDJ: {data['indicators']['long_term'].get('kdj', 0)}, SAR: {data['indicators']['long_term'].get('sar', 0)}, AVL: {data['indicators']['long_term'].get('avl', 0)}, Volume: {data['indicators']['long_term'].get('volume', 0)}, OBV: {data['indicators']['long_term'].get('obv', 0)}, WR: {data['indicators']['long_term'].get('wr', 0)}
-            JSON formatında cevap ver:
-            {{
-              "coin": "{data['symbol']}",
-              "short_term": {{
-                "entry_price": {{price}},
-                "exit_price": {{price}},
-                "stop_loss": {{price}},
-                "leverage": "{{leverage}}x",
-                "pump_probability": {{percentage}},
-                "dump_probability": {{percentage}},
-                "analysis": "{{text}}"
-              }},
-              "long_term": {{
-                "entry_price": {{price}},
-                "exit_price": {{price}},
-                "stop_loss": {{price}},
-                "leverage": "{{leverage}}x",
-                "pump_probability": {{percentage}},
-                "dump_probability": {{percentage}},
-                "analysis": "{{text}}"
-              }}
-            }}
-            Pump/dump olasılıklarını yüzde olarak belirt, teknik terimler kullan, riskleri vurgula, kaldıraç oranını öner.
-            """
-            response = self.client.chat.completions.create(
-                model="deepseek-reasoner",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={'type': 'json_object'},
-                max_tokens=4096
+            symbol = data.get('coin', 'Unknown')  # Use 'coin' instead of 'symbol'
+            price = data.get('price', 0)
+            volume = data.get('volume', 0)
+            indicators = data.get('indicators', {})
+            
+            prompt = (
+                f"Analyze the following cryptocurrency data for {symbol}:\n"
+                f"Current Price: ${price}\n"
+                f"24h Volume: ${volume}\n"
+                f"1h RSI: {indicators.get('rsi_1h', 'N/A')}\n"
+                f"1h EMA20: {indicators.get('ema_20_1h', 'N/A')}\n"
+                f"1h EMA50: {indicators.get('ema_50_1h', 'N/A')}\n"
+                f"1h MACD: {indicators.get('macd_1h', 'N/A')}\n"
+                f"1h MACD Signal: {indicators.get('macd_signal_1h', 'N/A')}\n"
+                f"4h RSI: {indicators.get('rsi_4h', 'N/A')}\n"
+                f"4h EMA20: {indicators.get('ema_20_4h', 'N/A')}\n"
+                f"4h EMA50: {indicators.get('ema_50_4h', 'N/A')}\n"
+                f"4h MACD: {indicators.get('macd_4h', 'N/A')}\n"
+                f"4h MACD Signal: {indicators.get('macd_signal_4h', 'N/A')}\n"
+                "Provide a short-term trading analysis (1-4 hours) including:\n"
+                "- Pump probability (0-100%)\n"
+                "- Dump probability (0-100%)\n"
+                "- Entry price\n"
+                "- Exit price\n"
+                "- Stop loss\n"
+                "- Leverage (if applicable)"
             )
-            return json.loads(response.choices[0].message.content)
+            
+            response = self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            analysis = response.choices[0].message.content
+            try:
+                # Assuming the response is JSON-like
+                parsed = json.loads(analysis)
+                logger.info(f"DeepSeek analysis completed for {symbol}")
+                return {'short_term': parsed}
+            except json.JSONDecodeError:
+                logger.warning(f"DeepSeek response for {symbol} is not valid JSON: {analysis}")
+                return {'short_term': {
+                    'pump_probability': 0,
+                    'dump_probability': 0,
+                    'entry_price': price,
+                    'exit_price': price,
+                    'stop_loss': price * 0.95,
+                    'leverage': 'N/A'
+                }}
         except Exception as e:
-            print(f"Error analyzing coin {data['symbol']}: {e}")
-            return {
-                "coin": data['symbol'],
-                "short_term": {"analysis": "Error in analysis"},
-                "long_term": {"analysis": "Error in analysis"}
-            }
+            logger.error(f"Error analyzing coin {symbol}: {e}")
+            return {'short_term': {
+                'pump_probability': 0,
+                'dump_probability': 0,
+                'entry_price': data.get('price', 0),
+                'exit_price': data.get('price', 0),
+                'stop_loss': data.get('price', 0) * 0.95,
+                'leverage': 'N/A'
+            }}
