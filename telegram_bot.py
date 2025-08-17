@@ -47,7 +47,7 @@ class MEXCClient:
             logger.error(f"Error fetching tickers: {e}")
             return []
 
- async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
+async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
     logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries})")
     try:
         # CCXT için zaman aralığı dönüşümü
