@@ -25,9 +25,9 @@ class MEXCClient:
         market_data = []
         for symbol in symbols:
             try:
-                # Zaman dilimlerini MEXC formatına uygun olarak kullan
+                # MEXC API için desteklenen zaman dilimleri: 60m ve 4h
                 klines_1h = await self.exchange.fetch_ohlcv(symbol, timeframe='60m', limit=100)
-                klines_4h = await self.exchange.fetch_ohlcv(symbol, timeframe='240m', limit=100)
+                klines_4h = await self.exchange.fetch_ohlcv(symbol, timeframe='4h', limit=100)
                 ticker = await self.exchange.fetch_ticker(symbol)
                 order_book = await self.exchange.fetch_order_book(symbol, limit=10)
                 data = {
