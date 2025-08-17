@@ -59,13 +59,10 @@ class TelegramBot:
                 logger.error("JobQueue is not available. Ensure python-telegram-bot[job-queue] is installed.")
                 await query.message.reply_text("Error: JobQueue is not configured. Contact the bot administrator.")
                 return
-            # Parse callback data
             parts = query.data.split('_')
             limit = int(parts[1])
             trade_type = parts[2]
-            # Hemen kullanıcıya bilgi ver
             message = await query.message.reply_text(f"{trade_type.upper()} analizi yapılıyor (Top {limit})...")
-            # Analizi background task olarak başlat
             context.job_queue.run_once(
                 self.analyze_and_send,
                 0,
@@ -81,7 +78,7 @@ class TelegramBot:
         chat_id = data['chat_id']
         limit = data['limit']
         trade_type = data['trade_type']
-        query_message_id = data['query_message_id']
+        query_message_id = data.get('query_message_id')
         try:
             results = await self.analyze_coins(limit, trade_type)
             message = self.format_results(results, trade_type)
@@ -90,16 +87,26 @@ class TelegramBot:
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=f"No significant results for Top {limit} {trade_type} analysis.",
-                    reply_to_message_id=query_message_id
+                    reply_to_message_id=query_message_id if query_message_id else None
                 )
             else:
-                await context.bot.send_message(chat_id=chat_id, text=message, reply_to_message_id=query_message_id)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    reply_to_message_id=query_message_id if query_message_id else None
+                )
+        except BadRequest as e:
+            logger.error(f"BadRequest in analyze_and_send: {e}")
+            # Reply_to_message_id başarısız olursa, direk mesaj gönder
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Error during {trade_type} analysis: {str(e)}"
+            )
         except Exception as e:
             logger.error(f"Error in analyze_and_send: {e}")
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"Error during {trade_type} analysis: {str(e)}",
-                reply_to_message_id=query_message_id
+                text=f"Error during {trade_type} analysis: {str(e)}"
             )
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,9 +129,9 @@ class TelegramBot:
             message_spot = self.format_results(data, 'spot')
             message_futures = self.format_results(data, 'futures')
             messages = []
-            if not message_spot.strip().endswith("TOP_100_SPOT:\n") or not message_spot.strip().endswith("TOP_300_SPOT:\n"):
+            if not message_spot.strip().endswith("TOP_100_SPOT:\n") and not message_spot.strip().endswith("TOP_300_SPOT:\n"):
                 messages.append(message_spot)
-            if not message_futures.strip().endswith("TOP_100_FUTURES:\n") or not message_futures.strip().endswith("TOP_300_FUTURES:\n"):
+            if not message_futures.strip().endswith("TOP_100_FUTURES:\n") and not message_futures.strip().endswith("TOP_300_FUTURES:\n"):
                 messages.append(message_futures)
             if messages:
                 await update.message.reply_text("\n\n".join(messages))
@@ -138,15 +145,13 @@ class TelegramBot:
         message = f"📊 {trade_type.upper()} Günlük Coin Analizi ({data['date']})\n"
         for category in [f'top_100_{trade_type}', f'top_300_{trade_type}']:
             message += f"\n{category.upper()}:\n"
-            # Tüm coin’leri al, olasılık sıralı
             coins = data.get(category, [])
-            # Pump olasılığına göre sırala
             coins.sort(
                 key=lambda x: x.get('deepseek_analysis', {}).get('short_term', {}).get('pump_probability', 0),
                 reverse=True
             )
-            # En fazla 10 coin göster
             for i, coin in enumerate(coins[:10], 1):
+                indicators = coin.get('indicators', {})
                 message += f"{i}. {coin.get('coin', 'Unknown')}\n"
                 message += (
                     f"- Kısa Vadeli: Giriş: ${coin['deepseek_analysis']['short_term'].get('entry_price', 0):.2f} | "
@@ -156,6 +161,11 @@ class TelegramBot:
                     f"- Pump Olasılığı: {coin['deepseek_analysis']['short_term'].get('pump_probability', 0)}% | "
                     f"Dump Olasılığı: {coin['deepseek_analysis']['short_term'].get('dump_probability', 0)}%\n"
                     f"- Temel Analiz: {coin['deepseek_analysis']['short_term'].get('fundamental_analysis', 'No data')}\n"
+                    f"- Hacim Değişimleri: 1h: {indicators.get('volume_change_1h', 'N/A'):.2f}% | "
+                    f"3h: {indicators.get('volume_change_3h', 'N/A'):.2f}% | "
+                    f"6h: {indicators.get('volume_change_6h', 'N/A'):.2f}% | "
+                    f"24h: {indicators.get('volume_change_24h', 'N/A'):.2f}%\n"
+                    f"- Bid/Ask Oranı: {indicators.get('bid_ask_ratio', 'N/A'):.2f}\n"
                 )
         return message
 
@@ -164,7 +174,7 @@ class TelegramBot:
             data = await mexc.get_market_data(symbol)
             if data:
                 from indicators import calculate_indicators
-                data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'])
+                data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'], data.get('order_book'))
                 if data['indicators']:
                     data['deepseek_analysis'] = deepseek.analyze_coin(data, trade_type)
                     logger.info(f"Processed {symbol} ({trade_type}) successfully")
