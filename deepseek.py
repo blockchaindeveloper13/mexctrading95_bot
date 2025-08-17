@@ -6,35 +6,40 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 # Loglama ayarları
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
 class DeepSeekClient:
     def __init__(self):
+        logger.debug("Initializing DeepSeekClient")
         self.client = OpenAI(
             api_key=os.getenv('DEEPSEEK_API_KEY'),
             base_url="https://api.deepseek.com"
         )
+        logger.debug("OpenAI client initialized for DeepSeek")
 
     def clean_json_response(self, response):
-        """DeepSeek yanıtından markdown ve ek metinleri temizler, sadece JSON kısmını döndürür."""
+        logger.debug(f"Cleaning JSON response: {response[:200]}...")
         try:
             cleaned = re.sub(r'^```json\s*|\s*```$', '', response, flags=re.MULTILINE)
             cleaned = re.sub(r'\n\s*###.*|\n\s*\*.*', '', cleaned, flags=re.MULTILINE)
             cleaned = cleaned.strip()
+            logger.debug(f"Cleaned JSON response: {cleaned[:200]}...")
             return cleaned
         except Exception as e:
-            logger.error(f"Error cleaning JSON response: {e}, original response: {response}")
+            logger.error(f"Error cleaning JSON response: {e}, original response: {response[:200]}...")
             return response
 
     def analyze_coin(self, data, trade_type='spot'):
+        logger.debug(f"Analyzing coin for data: {data.get('coin', 'Unknown')} ({trade_type})")
         try:
             symbol = data.get('coin', 'Unknown')
             price = data.get('price', 0)
             volume = data.get('volume', 0)
             indicators = data.get('indicators', {})
+            logger.debug(f"Symbol: {symbol}, Price: {price}, Volume: {volume}, Indicators: {indicators}")
             
             prompt = (
                 f"Analyze the following cryptocurrency data for {symbol} ({trade_type.upper()} trading):\n"
@@ -77,16 +82,19 @@ class DeepSeekClient:
                 "- fundamental_analysis (string, brief summary of news/market sentiment)\n"
                 "Return *only* a valid JSON object with these fields, no additional text, markdown, or comments."
             )
+            logger.debug(f"DeepSeek prompt for {symbol}: {prompt[:200]}...")
             
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}]
             )
+            logger.debug(f"DeepSeek raw response for {symbol}: {response.choices[0].message.content[:200]}...")
             
             analysis = response.choices[0].message.content
             cleaned_analysis = self.clean_json_response(analysis)
             try:
                 parsed = json.loads(cleaned_analysis)
+                logger.debug(f"Parsed DeepSeek response for {symbol}: {parsed}")
                 if not isinstance(parsed, dict):
                     logger.warning(f"DeepSeek response for {symbol} ({trade_type}) is not a valid JSON object: {cleaned_analysis}")
                     return {'short_term': {
