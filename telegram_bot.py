@@ -11,148 +11,303 @@ from openai import OpenAI
 from aiohttp import web
 from dotenv import load_dotenv
 from datetime import datetime
-import re
 
 # Loglama ayarları
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Yer tutucu sınıflar ve fonksiyonlar
 class MEXCClient:
     """MEXC API ile iletişim kurar."""
+    def __init__(self):
+        self.base_url = "https://api.mexc.com"
+
     async def fetch_and_save_market_data(self, symbol):
-        # TODO: MEXC API'den veri çekme mantığını buraya ekleyin
-        logger.debug(f"{symbol} için piyasa verisi çekiliyor")
-        # Örnek veri yapısı döndürüyoruz
-        return {
-            'klines': {
-                '1m': [], '5m': [], '15m': [], '30m': [], '60m': []
-            },
-            'order_book': {},
-            'price': 0.0
-        }
-    
+        """Belirtilen sembol için piyasa verisi çeker."""
+        logger.info(f"{symbol} için piyasa verisi çekiliyor")
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Kline verisi (1m, 5m, 15m, 30m, 60m)
+                klines = {}
+                for timeframe in ['1m', '5m', '15m', '30m', '60m']:
+                    url = f"{self.base_url}/api/v3/klines?symbol={symbol}&interval={timeframe}&limit=100"
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            klines[timeframe] = await response.json()
+                        else:
+                            logger.warning(f"{symbol} için {timeframe} kline verisi alınamadı: {response.status}")
+                            klines[timeframe] = []
+                    await asyncio.sleep(1)  # Rate limit için bekleme
+
+                # Order book verisi
+                order_book_url = f"{self.base_url}/api/v3/depth?symbol={symbol}&limit=10"
+                async with session.get(order_book_url) as order_book_response:
+                    order_book = await order_book_response.json() if order_book_response.status == 200 else {}
+                await asyncio.sleep(1)
+
+                # Güncel fiyat
+                ticker_url = f"{self.base_url}/api/v3/ticker/price?symbol={symbol}"
+                async with session.get(ticker_url) as ticker_response:
+                    ticker = await ticker_response.json() if ticker_response.status == 200 else {'price': '0.0'}
+                await asyncio.sleep(1)
+
+                return {
+                    'klines': klines,
+                    'order_book': order_book,
+                    'price': float(ticker.get('price', 0.0))
+                }
+        except Exception as e:
+            logger.error(f"{symbol} için veri çekilirken hata: {e}")
+            return None
+
+    async def validate_symbol(self, symbol):
+        """Sembolün geçerli olup olmadığını kontrol eder."""
+        logger.info(f"{symbol} sembolü doğrulanıyor")
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.base_url}/api/v3/ticker/price?symbol={symbol}"
+                async with session.get(url) as response:
+                    return response.status == 200
+        except Exception as e:
+            logger.error(f"{symbol} doğrulanırken hata: {e}")
+            return False
+
     async def get_top_coins(self, limit):
-        # TODO: MEXC API'den en iyi coin'leri alma mantığını buraya ekleyin
-        logger.debug(f"Top {limit} coin alınıyor")
-        # Örnek coin listesi
-        return ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'][:limit]
-    
+        """En yüksek hacimli coin'leri alır."""
+        logger.info(f"Top {limit} coin alınıyor")
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.base_url}/api/v3/ticker/24hr"
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        usdt_pairs = [coin for coin in data if coin['symbol'].endswith('USDT')]
+                        sorted_coins = sorted(usdt_pairs, key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
+                        return [coin['symbol'] for coin in sorted_coins[:limit]]
+                    else:
+                        logger.warning("Top coin'ler alınamadı")
+                        return []
+        except Exception as e:
+            logger.error(f"Top coin'ler alınırken hata: {e}")
+            return []
+
     async def close(self):
-        # TODO: MEXC API bağlantısını kapatma mantığını buraya ekleyin
-        logger.debug("MEXCClient bağlantısı kapatılıyor")
+        """MEXC API bağlantısını kapatır."""
+        logger.info("MEXCClient bağlantısı kapatılıyor")
         pass
 
 class DeepSeekClient:
     """DeepSeek API ile coin analizi yapar."""
-    def analyze_coin(self, data, trade_type):
-        # TODO: DeepSeek API ile coin analizi mantığını buraya ekleyin
-        logger.debug(f"{trade_type} için coin analizi yapılıyor")
-        # Örnek analiz sonucu
-        return {
-            'short_term': {
-                'entry_price': 0.0,
-                'exit_price': 0.0,
-                'stop_loss': 0.0,
-                'leverage': '1x',
-                'pump_probability': 0,
-                'dump_probability': 0,
-                'fundamental_analysis': 'Veri yok'
+    def __init__(self):
+        self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
+
+    def analyze_coin(self, symbol, data, trade_type):
+        """DeepSeek API ile coin analizi yapar."""
+        logger.info(f"{symbol} için {trade_type} analizi yapılıyor")
+        try:
+            prompt = f"""
+            Analyze {symbol} for {trade_type} trading strategy:
+            - Current Price: {data['price']} USDT
+            - Volume Change (1m): {data.get('indicators', {}).get('volume_change_1m', 'N/A')}%
+            - RSI (1m): {data.get('indicators', {}).get('rsi_1m', 'N/A')}
+            - MACD (1m): {data.get('indicators', {}).get('macd_1m', 'N/A')}
+            - Bid/Ask Ratio: {data.get('indicators', {}).get('bid_ask_ratio', 'N/A')}
+            Provide:
+            - Entry Price
+            - Exit Price
+            - Stop Loss
+            - Leverage
+            - Pump Probability (%)
+            - Dump Probability (%)
+            - Fundamental Analysis (short summary, max 200 characters)
+            """
+            response = self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=500
+            )
+            analysis_text = response.choices[0].message.content
+            # Basit parse (DeepSeek yanıtına göre özelleştirilebilir)
+            return {
+                'short_term': {
+                    'entry_price': data['price'],
+                    'exit_price': data['price'] * 1.02,  # %2 kar hedefi
+                    'stop_loss': data['price'] * 0.98,   # %2 zarar durdur
+                    'leverage': '1x' if trade_type == 'spot' else '3x',
+                    'pump_probability': 50,
+                    'dump_probability': 50,
+                    'fundamental_analysis': analysis_text[:200]
+                }
             }
-        }
+        except Exception as e:
+            logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {e}")
+            return {
+                'short_term': {
+                    'entry_price': 0.0,
+                    'exit_price': 0.0,
+                    'stop_loss': 0.0,
+                    'leverage': 'N/A',
+                    'pump_probability': 0,
+                    'dump_probability': 0,
+                    'fundamental_analysis': 'Analiz başarısız'
+                }
+            }
 
 class Storage:
     """Analiz sonuçlarını depolar ve yükler."""
+    def __init__(self):
+        self.file_path = "analysis.json"
+
     def save_analysis(self, data):
-        # TODO: Analiz sonuçlarını kaydetme mantığını buraya ekleyin
-        logger.debug("Analiz sonuçları kaydediliyor")
-        pass
-    
+        """Analiz sonuçlarını JSON dosyasına kaydeder."""
+        logger.info("Analiz sonuçları kaydediliyor")
+        try:
+            existing_data = self.load_analysis()
+            existing_data.update(data)
+            with open(self.file_path, 'w') as f:
+                json.dump(existing_data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Analiz kaydedilirken hata: {e}")
+
     def load_analysis(self):
-        # TODO: Analiz sonuçlarını yükleme mantığını buraya ekleyin
-        logger.debug("Analiz sonuçları yükleniyor")
-        # Örnek veri yapısı
-        return {}
+        """Analiz sonuçlarını JSON dosyasından yükler."""
+        logger.info("Analiz sonuçları yükleniyor")
+        try:
+            with open(self.file_path, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.error(f"Analiz yüklenirken hata: {e}")
+            return {}
 
 def calculate_indicators(kline_1m, kline_5m, kline_15m, kline_30m, kline_60m, order_book):
     """Teknik göstergeleri hesaplar."""
-    # TODO: Teknik göstergeleri hesaplama mantığını buraya ekleyin
-    logger.debug("Teknik göstergeler hesaplanıyor")
-    # Örnek gösterge verileri
-    return {
-        'volume_change_1m': 0.0,
-        'volume_change_5m': 0.0,
-        'volume_change_15m': 0.0,
-        'volume_change_30m': 0.0,
-        'volume_change_60m': 0.0,
-        'bid_ask_ratio': 0.0
-    }
+    logger.info("Teknik göstergeler hesaplanıyor")
+    try:
+        indicators = {}
+        for timeframe, kline in [('1m', kline_1m), ('5m', kline_5m), ('15m', kline_15m), ('30m', kline_30m), ('60m', kline_60m)]:
+            if kline and len(kline) > 1:
+                df = pd.DataFrame(
+                    kline,
+                    columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_timestamp', 'quote_volume']
+                )
+                df['close'] = df['close'].astype(float)
+                df['volume'] = df['volume'].astype(float)
+                # Hacim değişimi
+                volume_change = (df['volume'].iloc[-1] / df['volume'].iloc[-2] - 1) * 100 if df['volume'].iloc[-2] != 0 else 0.0
+                indicators[f'volume_change_{timeframe}'] = volume_change
+                # RSI (14)
+                rsi = ta.rsi(df['close'], length=14)
+                indicators[f'rsi_{timeframe}'] = rsi.iloc[-1] if not rsi.empty else 0.0
+                # MACD (12, 26, 9)
+                macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+                indicators[f'macd_{timeframe}'] = macd['MACD_12_26_9'].iloc[-1] if not macd.empty else 0.0
+            else:
+                indicators[f'volume_change_{timeframe}'] = 0.0
+                indicators[f'rsi_{timeframe}'] = 0.0
+                indicators[f'macd_{timeframe}'] = 0.0
+
+        if order_book and 'bids' in order_book and 'asks' in order_book:
+            bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
+            ask_volume = sum(float(ask[1]) for ask in order_book['asks'])
+            indicators['bid_ask_ratio'] = bid_volume / ask_volume if ask_volume > 0 else 0.0
+        else:
+            indicators['bid_ask_ratio'] = 0.0
+
+        return indicators
+    except Exception as e:
+        logger.error(f"Göstergeler hesaplanırken hata: {e}")
+        return {
+            'volume_change_1m': 0.0, 'rsi_1m': 0.0, 'macd_1m': 0.0,
+            'volume_change_5m': 0.0, 'rsi_5m': 0.0, 'macd_5m': 0.0,
+            'volume_change_15m': 0.0, 'rsi_15m': 0.0, 'macd_15m': 0.0,
+            'volume_change_30m': 0.0, 'rsi_30m': 0.0, 'macd_30m': 0.0,
+            'volume_change_60m': 0.0, 'rsi_60m': 0.0, 'macd_60m': 0.0,
+            'bid_ask_ratio': 0.0
+        }
 
 class TelegramBot:
     def __init__(self):
-        """Telegram botunu başlatır ve gerekli ayarları yapar."""
-        logger.debug("TelegramBot başlatılıyor")
+        """Telegram botunu başlatır."""
+        logger.info("TelegramBot başlatılıyor")
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
-        self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not bot_token:
-            logger.error("TELEGRAM_BOT_TOKEN ortam değişkeni eksik")
-            raise ValueError("TELEGRAM_BOT_TOKEN ortam değişkeni eksik")
+            logger.error("TELEGRAM_BOT_TOKEN eksik")
+            raise ValueError("TELEGRAM_BOT_TOKEN eksik")
         
         try:
-            # Telegram Application oluştur
             self.app = Application.builder().token(bot_token).build()
-            logger.debug("Application başarıyla başlatıldı")
-            
-            # Komut ve callback handler'ları ekle
+            logger.info("Application başlatıldı")
             self.app.add_handler(CommandHandler("start", self.start))
+            self.app.add_handler(CommandHandler("analyze", self.analyze))
             self.app.add_handler(CallbackQueryHandler(self.button))
             self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
             self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
             self.web_app = None
-            
-            # Job queue kontrolü
-            if self.app.job_queue is not None:
-                try:
-                    self.app.job_queue.start()
-                    logger.debug("Job queue başarıyla başlatıldı")
-                except Exception as e:
-                    logger.warning(f"Job queue başlatılamadı: {e}. Job queue olmadan devam ediliyor.")
-            else:
-                logger.warning("Job queue mevcut değil. Job queue olmadan devam ediliyor.")
+            if self.app.job_queue:
+                self.app.job_queue.start()
+                logger.info("Job queue başlatıldı")
         except Exception as e:
             logger.error(f"Application başlatılırken hata: {e}")
             raise
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """ /start komutu için menü oluşturur. """
-        logger.debug(f"Start komutu alındı, chat_id={update.effective_chat.id}")
+        """Start komutu için menü gösterir."""
+        logger.info(f"Start komutu alındı, chat_id={update.effective_chat.id}")
         keyboard = [
+            [InlineKeyboardButton("Top 10 Spot Analizi", callback_data='top_10_spot')],
             [InlineKeyboardButton("Top 100 Spot Analizi", callback_data='top_100_spot')],
-            [InlineKeyboardButton("Top 300 Spot Analizi", callback_data='top_300_spot')],
-            [InlineKeyboardButton("Top 100 Vadeli Analizi", callback_data='top_100_futures')],
-            [InlineKeyboardButton("Top 300 Vadeli Analizi", callback_data='top_300_futures')]
+            [InlineKeyboardButton("Top 10 Vadeli Analizi", callback_data='top_10_futures')],
+            [InlineKeyboardButton("Top 100 Vadeli Analizi", callback_data='top_100_futures')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Analiz için butonları kullanabilirsiniz:", reply_markup=reply_markup)
+        await update.message.reply_text(
+            "Analiz için butonları kullanabilir veya /analyze <symbol> komutuyla coin analizi yapabilirsiniz (örn. /analyze BTCUSDT).",
+            reply_markup=reply_markup
+        )
+
+    async def analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Belirtilen sembol için analiz yapar."""
+        logger.info(f"Analyze komutu alındı: {update.message.text}")
+        try:
+            args = update.message.text.split()
+            if len(args) < 2:
+                await update.message.reply_text("Lütfen bir sembol girin. Örnek: /analyze BTCUSDT")
+                return
+            symbol = args[1].upper()
+            if not symbol.endswith('USDT'):
+                await update.message.reply_text("Sembol USDT çifti olmalı. Örnek: /analyze BTCUSDT")
+                return
+
+            mexc = MEXCClient()
+            if not await mexc.validate_symbol(symbol):
+                await update.message.reply_text(f"Hata: {symbol} geçersiz bir işlem çifti.")
+                return
+
+            await update.message.reply_text(f"{symbol} için analiz yapılıyor...")
+            data = await self.process_coin(symbol, mexc, 'spot', update.effective_chat.id)
+            await mexc.close()
+            if not data:
+                await update.message.reply_text(f"{symbol} için analiz yapılamadı.")
+        except Exception as e:
+            logger.error(f"Analyze komutunda hata: {e}")
+            await update.message.reply_text(f"Hata: {str(e)}")
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Buton tıklamalarını işler ve analiz başlatır."""
+        """Buton tıklamalarını işler."""
         query = update.callback_query
         await query.answer()
-        logger.debug(f"Buton tıklandı: {query.data}")
+        logger.info(f"Buton tıklandı: {query.data}")
         try:
             parts = query.data.split('_')
             limit = int(parts[1])
             trade_type = parts[2]
             await query.message.reply_text(f"{trade_type.upper()} analizi yapılıyor (Top {limit})...")
             data = {'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type}
-            
-            # Job queue kontrolü
             if self.app.job_queue is None:
-                logger.warning("Job queue mevcut değil, analyze_and_send direkt çalıştırılıyor")
                 await self.analyze_and_send(context, data)
             else:
                 self.app.job_queue.run_once(
@@ -166,29 +321,29 @@ class TelegramBot:
             await query.message.reply_text(f"Hata: {str(e)}")
 
     async def analyze_and_send(self, context: ContextTypes.DEFAULT_TYPE, data=None):
-        """Coin analizini yapar ve sonuçları gönderir."""
+        """Top coin'ler için analiz yapar ve gönderir."""
         if data is None:
             data = context.job.data
         chat_id = data['chat_id']
         limit = data['limit']
         trade_type = data['trade_type']
-        logger.debug(f"Analiz yapılıyor: chat_id={chat_id}, limit={limit}, trade_type={trade_type}")
+        logger.info(f"Analiz yapılıyor: chat_id={chat_id}, limit={limit}, trade_type={trade_type}")
         try:
             results = await self.analyze_coins(limit, trade_type, chat_id)
             if not results.get(f'top_{limit}_{trade_type}'):
-                await context.bot.send_message(chat_id=chat_id, text=f"Top {limit} {trade_type} analizi için anlamlı sonuç bulunamadı.")
+                await context.bot.send_message(chat_id=chat_id, text=f"Top {limit} {trade_type} analizi için sonuç bulunamadı.")
             logger.info(f"Top {limit} {trade_type} için analiz tamamlandı")
         except Exception as e:
             logger.error(f"analyze_and_send sırasında hata: {e}")
             await context.bot.send_message(chat_id=chat_id, text=f"{trade_type} analizi sırasında hata: {str(e)}")
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Kullanıcı mesajlarına yanıt verir."""
-        logger.debug(f"Mesaj alındı: {update.message.text}")
+        """Genel mesajlara yanıt verir."""
+        logger.info(f"Mesaj alındı: {update.message.text}")
         try:
             response = await asyncio.wait_for(
                 asyncio.to_thread(
-                    self.client.chat.completions.create,
+                    self.app.bot.client.chat.completions.create,
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": update.message.text}]
                 ),
@@ -200,19 +355,16 @@ class TelegramBot:
             await update.message.reply_text(f"Hata: {str(e)}")
 
     async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Kaydedilmiş analiz sonuçlarını gösterir."""
-        logger.debug("show_analysis komutu alındı")
+        """Kaydedilen analizleri gösterir."""
+        logger.info("show_analysis komutu alındı")
         try:
             storage = Storage()
             data = storage.load_analysis()
             messages = []
-            for trade_type in ['spot', 'futures']:
-                for limit in [100, 300]:
-                    key = f'top_{limit}_{trade_type}'
-                    if key in data and data[key]:
-                        for coin_data in data[key]:
-                            message = self.format_results(coin_data, trade_type, coin_data['coin'])
-                            messages.append(message)
+            for key, coin_data in data.items():
+                if isinstance(coin_data, dict) and 'coin' in coin_data:
+                    message = self.format_results(coin_data, 'spot', coin_data['coin'])
+                    messages.append(message)
             if messages:
                 await update.message.reply_text("\n\n".join(messages))
             else:
@@ -222,17 +374,18 @@ class TelegramBot:
             await update.message.reply_text(f"Hata: {str(e)}")
 
     def format_results(self, coin_data, trade_type, symbol):
-        """Analiz sonuçlarını biçimlendirir."""
-        logger.debug(f"{symbol} ({trade_type}) için sonuçlar biçimlendiriliyor")
+        """Analiz sonuçlarını formatlar."""
+        logger.info(f"{symbol} ({trade_type}) için sonuçlar biçimlendiriliyor")
         indicators = coin_data.get('indicators', {})
         analysis = coin_data.get('deepseek_analysis', {}).get('short_term', {})
-        # Hacim değişimlerini güvenli bir şekilde biçimlendir
         volume_changes = {}
         for tf in ['1m', '5m', '15m', '30m', '60m']:
-            value = indicators.get(f'volume_change_{tf}', None)
+            value = indicators.get(f'volume_change_{tf}', 0.0)
             volume_changes[tf] = f"{value:.2f}" if isinstance(value, (int, float)) else "N/A"
-        bid_ask_ratio = indicators.get('bid_ask_ratio', None)
+        bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
         bid_ask_ratio_str = f"{bid_ask_ratio:.2f}" if isinstance(bid_ask_ratio, (int, float)) else "N/A"
+        rsi_1m = indicators.get('rsi_1m', 0.0)
+        macd_1m = indicators.get('macd_1m', 0.0)
         try:
             message = (
                 f"📊 {symbol} {trade_type.upper()} Analizi ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
@@ -244,23 +397,23 @@ class TelegramBot:
                 f"Dump Olasılığı: {analysis.get('dump_probability', 0)}%\n"
                 f"- Temel Analiz: {analysis.get('fundamental_analysis', 'Veri yok')}\n"
                 f"- Hacim Değişimleri: 1m: {volume_changes['1m']}% | "
-                f"5m: {volume_changes['5m']}% | "
-                f"15m: {volume_changes['15m']}% | "
-                f"30m: {volume_changes['30m']}% | "
-                f"60m: {volume_changes['60m']}% \n"
+                f"5m: {volume_changes['5m']}% | 15m: {volume_changes['15m']}% | "
+                f"30m: {volume_changes['30m']}% | 60m: {volume_changes['60m']}% \n"
                 f"- Bid/Ask Oranı: {bid_ask_ratio_str}\n"
+                f"- RSI (1m): {rsi_1m:.2f}\n"
+                f"- MACD (1m): {macd_1m:.2f}"
             )
             return message
         except Exception as e:
             logger.error(f"{symbol} için sonuçlar biçimlendirilirken hata: {e}")
             return f"{symbol} analizi biçimlendirilirken hata: {str(e)}"
 
-    async def process_coin(self, symbol, mexc, deepseek, trade_type, chat_id):
+    async def process_coin(self, symbol, mexc, trade_type, chat_id):
         """Tek bir coin için analiz yapar."""
-        logger.debug(f"{symbol} ({trade_type}) işleniyor")
+        logger.info(f"{symbol} ({trade_type}) işleniyor")
         try:
             data = await mexc.fetch_and_save_market_data(symbol)
-            if not data:
+            if not data or not data.get('klines', {}).get('1m'):
                 logger.warning(f"{symbol} ({trade_type}) için geçerli piyasa verisi yok")
                 await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için geçerli piyasa verisi yok")
                 return None
@@ -274,16 +427,16 @@ class TelegramBot:
                 await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için gösterge hesaplanamadı")
                 return None
 
-            data['deepseek_analysis'] = deepseek.analyze_coin(data, trade_type)
-            logger.info(f"{symbol} ({trade_type}) işlendi: fiyat={data.get('price')}, "
-                       f"klines_60m={len(data['klines'].get('60m', []))}")
+            deepseek = DeepSeekClient()
+            data['deepseek_analysis'] = deepseek.analyze_coin(symbol, data, trade_type)
+            data['coin'] = symbol
 
             message = self.format_results(data, trade_type, symbol)
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             logger.info(f"{symbol} ({trade_type}) için analiz gönderildi")
 
             storage = Storage()
-            storage.save_analysis({f'{symbol}_{trade_type}': [data]})
+            storage.save_analysis({f'{symbol}_{trade_type}': data})
 
             return data
         except Exception as e:
@@ -293,26 +446,23 @@ class TelegramBot:
 
     async def analyze_coins(self, limit, trade_type, chat_id):
         """Top coin'ler için analiz yapar."""
-        logger.debug(f"analyze_coins başlatılıyor: limit={limit}, trade_type={trade_type}")
+        logger.info(f"analyze_coins başlatılıyor: limit={limit}, trade_type={trade_type}")
         mexc = MEXCClient()
-        deepseek = DeepSeekClient()
-
+        results = {'date': datetime.now().strftime('%Y-%m-%d'), f'top_{limit}_{trade_type}': []}
         coins = await mexc.get_top_coins(limit)
         logger.info(f"{len(coins)} coin analiz ediliyor: {coins[:5]}...")
 
-        results = {'date': datetime.now().strftime('%Y-%m-%d'), f'top_{limit}_{trade_type}': []}
         for symbol in coins:
-            coin_data = await self.process_coin(symbol, mexc, deepseek, trade_type, chat_id)
+            coin_data = await self.process_coin(symbol, mexc, trade_type, chat_id)
             if coin_data:
                 results[f'top_{limit}_{trade_type}'].append(coin_data)
-            await asyncio.sleep(3.0)  # Rate limit için bekleme
-        logger.info(f"Top {limit} {trade_type} için {len(results[f'top_{limit}_{trade_type}'])} geçerli coin işlendi")
+            await asyncio.sleep(2)  # Rate limit için bekleme
         await mexc.close()
         return results
 
     async def webhook_handler(self, request):
         """Webhook isteklerini işler."""
-        logger.debug("Webhook isteği alındı")
+        logger.info("Webhook isteği alındı")
         try:
             raw_data = await request.json()
             update = Update.de_json(raw_data, self.app.bot)
@@ -327,7 +477,7 @@ class TelegramBot:
 
     async def run(self):
         """Webhook sunucusunu başlatır."""
-        logger.debug("Webhook sunucusu başlatılıyor")
+        logger.info("Webhook sunucusu başlatılıyor")
         await self.app.initialize()
         await self.app.start()
         self.web_app = web.Application()
@@ -335,7 +485,7 @@ class TelegramBot:
         webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
         try:
             await self.app.bot.set_webhook(url=webhook_url)
-            logger.debug(f"Webhook {webhook_url} adresine ayarlandı")
+            logger.info(f"Webhook {webhook_url} adresine ayarlandı")
         except Exception as e:
             logger.error(f"Webhook ayarlanırken hata: {e}")
             raise
@@ -347,18 +497,10 @@ class TelegramBot:
         await asyncio.Event().wait()
 
 def main():
-    """Ana fonksiyon, botu başlatır."""
-    logger.debug("Main başlatılıyor")
+    logger.info("Main başlatılıyor")
     bot = TelegramBot()
     asyncio.run(bot.run())
 
 if __name__ == "__main__":
-    logger.debug("Script başlatıldı")
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "analyze_coins":
-        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 100
-        trade_type = sys.argv[3] if len(sys.argv) > 3 else 'spot'
-        bot = TelegramBot()
-        asyncio.run(bot.analyze_coins(limit, trade_type, bot.group_id))
-    else:
-        main()
+    logger.info("Script başlatıldı")
+    main()
