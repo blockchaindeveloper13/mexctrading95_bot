@@ -18,6 +18,9 @@ load_dotenv()
 class TelegramBot:
     def __init__(self):
         self.group_id = os.getenv('TELEGRAM_GROUP_ID')
+        if not self.group_id:
+            logger.error("TELEGRAM_GROUP_ID is not set in environment variables")
+            raise ValueError("TELEGRAM_GROUP_ID is not set")
         self.client = OpenAI(
             api_key=os.getenv('DEEPSEEK_API_KEY'),
             base_url="https://api.deepseek.com"
@@ -46,7 +49,11 @@ class TelegramBot:
         limit = 100 if query.data == 'top_100' else 300
         results = await self.analyze_coins(limit)
         message = self.format_results(results)
-        await context.bot.send_message(chat_id=self.group_id, text=message)
+        if self.group_id:
+            await context.bot.send_message(chat_id=self.group_id, text=message)
+        else:
+            logger.error("Cannot send message: group_id is not set")
+            await query.message.reply_text("Error: Group ID is not set")
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Chat message received: {update.message.text}")
@@ -93,17 +100,18 @@ class TelegramBot:
         deepseek = DeepSeekClient()
         storage = Storage()
         
-        coins = mexc.get_top_coins(limit)
+        coins = await mexc.get_top_coins(limit)
         results = {'date': datetime.now().strftime('%Y-%m-%d'), 'top_100': [], 'top_300': []}
         
         for symbol in coins:
-            data = mexc.get_market_data(symbol)
+            data = await mexc.get_market_data(symbol)
             if data:
                 data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'])
                 data['deepseek_analysis'] = deepseek.analyze_coin(data)
                 results['top_100' if limit == 100 else 'top_300'].append(data)
         
         storage.save_analysis(results)
+        await mexc.close()  # MEXC client’ı kapat
         return results
 
     async def webhook_handler(self, request):
