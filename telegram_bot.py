@@ -114,6 +114,7 @@ class DeepSeekClient:
             resistance = float(re.search(r'Resistance Level: (\d+\.?\d*)', text).group(1)) if re.search(r'Resistance Level: (\d+\.?\d*)', text) else current_price * 1.05
             risk_reward = float(re.search(r'Risk/Reward Ratio: (\d+\.?\d*)', text).group(1)) if re.search(r'Risk/Reward Ratio: (\d+\.?\d*)', text) else (exit_price - entry_price) / (entry_price - stop_loss) if entry_price > stop_loss else 1.0
             fundamental = re.search(r'Fundamental Analysis: (.+?)(?:\n|$)', text).group(1)[:500] if re.search(r'Fundamental Analysis: (.+?)(?:\n|$)', text) else text[:500]
+            comment = re.search(r'Comment: (.+?)(?:\n|$)', text).group(1)[:500] if re.search(r'Comment: (.+?)(?:\n|$)', text) else "No specific comment provided."
             return {
                 'entry_price': entry_price,
                 'exit_price': exit_price,
@@ -125,7 +126,8 @@ class DeepSeekClient:
                 'support_level': support,
                 'resistance_level': resistance,
                 'risk_reward_ratio': risk_reward,
-                'fundamental_analysis': fundamental
+                'fundamental_analysis': fundamental,
+                'comment': comment
             }
         except Exception as e:
             logger.error(f"DeepSeek yanıtı parse edilirken hata: {e}")
@@ -140,7 +142,8 @@ class DeepSeekClient:
                 'support_level': current_price * 0.95,
                 'resistance_level': current_price * 1.05,
                 'risk_reward_ratio': 1.0,
-                'fundamental_analysis': 'Parse başarısız'
+                'fundamental_analysis': 'Parse başarısız',
+                'comment': 'No specific comment provided.'
             }
 
     def analyze_coin(self, symbol, data, trade_type):
@@ -181,6 +184,7 @@ class DeepSeekClient:
             - Resistance Level: <specific price in USDT>
             - Risk/Reward Ratio: <e.g., 2.0>
             - Fundamental Analysis: <detailed summary, max 500 characters, include volume trends, market sentiment, and buying/selling pressure>
+            - Comment: <overall trading recommendation, e.g., buy/sell/hold, with reasoning based on indicators>
             """
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
@@ -203,7 +207,8 @@ class DeepSeekClient:
                     'support_level': data['price'] * 0.95,
                     'resistance_level': data['price'] * 1.05,
                     'risk_reward_ratio': 1.0,
-                    'fundamental_analysis': 'Analiz başarısız'
+                    'fundamental_analysis': 'Analiz başarısız',
+                    'comment': 'No specific comment provided.'
                 }
             }
 
@@ -248,13 +253,10 @@ def calculate_indicators(kline_1m, kline_5m, kline_15m, kline_30m, kline_60m, or
                 )
                 df['close'] = df['close'].astype(float)
                 df['volume'] = df['volume'].astype(float)
-                # Hacim değişimi
                 volume_change = (df['volume'].iloc[-1] / df['volume'].iloc[-2] - 1) * 100 if df['volume'].iloc[-2] != 0 else 0.0
                 indicators[f'volume_change_{timeframe}'] = volume_change
-                # RSI (14)
                 rsi = ta.rsi(df['close'], length=14)
                 indicators[f'rsi_{timeframe}'] = rsi.iloc[-1] if not rsi.empty else 0.0
-                # MACD (12, 26, 9)
                 macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
                 indicators[f'macd_{timeframe}'] = macd['MACD_12_26_9'].iloc[-1] if not macd.empty else 0.0
             else:
@@ -289,7 +291,6 @@ def explain_indicators(indicators):
         rsi = indicators.get(f'rsi_{tf}', 0.0)
         macd = indicators.get(f'macd_{tf}', 0.0)
         
-        # Hacim açıklaması
         if isinstance(volume_change, (int, float)):
             if volume_change > 100:
                 vol_explain = f"{tf}: Hacimde %{volume_change:.2f} artış, güçlü alım/satım hareketi olabilir."
@@ -303,7 +304,6 @@ def explain_indicators(indicators):
             vol_explain = f"{tf}: Hacim verisi yok."
         explanations.append(vol_explain)
 
-        # RSI açıklaması
         if isinstance(rsi, (int, float)):
             if rsi > 70:
                 rsi_explain = f"{tf}: RSI {rsi:.2f}, aşırı alım bölgesinde, düşüş riski olabilir."
@@ -315,7 +315,6 @@ def explain_indicators(indicators):
             rsi_explain = f"{tf}: RSI verisi yok."
         explanations.append(rsi_explain)
 
-        # MACD açıklaması
         if isinstance(macd, (int, float)):
             if macd > 0:
                 macd_explain = f"{tf}: MACD {macd:.2f}, yükseliş eğilimi sinyali."
@@ -327,7 +326,6 @@ def explain_indicators(indicators):
             macd_explain = f"{tf}: MACD verisi yok."
         explanations.append(macd_explain)
 
-    # Bid/Ask oranı açıklaması
     bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
     if isinstance(bid_ask_ratio, (int, float)):
         if bid_ask_ratio > 1.5:
@@ -361,6 +359,7 @@ class TelegramBot:
             self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
             self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
             self.web_app = None
+            self.active_analyses = {}  # Aynı sembol için tekrar eden analizleri önlemek
             if self.app.job_queue:
                 self.app.job_queue.start()
                 logger.info("Job queue başlatıldı")
@@ -400,19 +399,31 @@ class TelegramBot:
                 await update.message.reply_text("Sembol USDT çifti olmalı. Örnek: /analyze BTCUSDT")
                 return
 
+            # Aynı sembol için çalışan analiz kontrolü
+            analysis_key = f"{symbol}_{trade_type}"
+            if analysis_key in self.active_analyses:
+                await update.message.reply_text(f"{symbol} için analiz zaten yapılıyor, lütfen bekleyin.")
+                return
+            self.active_analyses[analysis_key] = True
+
             mexc = MEXCClient()
             if not await mexc.validate_symbol(symbol):
+                del self.active_analyses[analysis_key]
                 await update.message.reply_text(f"Hata: {symbol} geçersiz bir işlem çifti.")
                 return
 
             await update.message.reply_text(f"{symbol} için {trade_type} analizi yapılıyor...")
             data = await self.process_coin(symbol, mexc, trade_type, update.effective_chat.id)
             await mexc.close()
+            del self.active_analyses[analysis_key]
+
             if not data:
                 await update.message.reply_text(f"{symbol} için analiz yapılamadı.")
         except Exception as e:
             logger.error(f"Analyze komutunda hata: {e}")
             await update.message.reply_text(f"Hata: {str(e)}")
+            if analysis_key in self.active_analyses:
+                del self.active_analyses[analysis_key]
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Buton tıklamalarını işler."""
@@ -461,7 +472,7 @@ class TelegramBot:
         try:
             response = await asyncio.wait_for(
                 asyncio.to_thread(
-                    self.client.chat.completions.create,
+                    self.app.bot.client.chat.completions.create,
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": update.message.text}]
                 ),
@@ -528,7 +539,8 @@ class TelegramBot:
                 f"15m: {rsi_values['15m']:.2f} | 30m: {rsi_values['30m']:.2f} | 60m: {rsi_values['60m']:.2f}\n"
                 f"  - MACD: 1m: {macd_values['1m']:.2f} | 5m: {macd_values['5m']:.2f} | "
                 f"15m: {macd_values['15m']:.2f} | 30m: {macd_values['30m']:.2f} | 60m: {macd_values['60m']:.2f}\n"
-                f"- Gösterge Açıklamaları:\n{explain_indicators(indicators)}"
+                f"- Gösterge Açıklamaları:\n{explain_indicators(indicators)}\n"
+                f"- DeepSeek Yorumu: {analysis.get('comment', 'Yorum yok.')}"
             )
             return message
         except Exception as e:
@@ -580,9 +592,15 @@ class TelegramBot:
         logger.info(f"{len(coins)} coin analiz ediliyor: {coins[:5]}...")
 
         for symbol in coins:
+            analysis_key = f"{symbol}_{trade_type}"
+            if analysis_key in self.active_analyses:
+                logger.info(f"{symbol} için analiz zaten yapılıyor, atlanıyor")
+                continue
+            self.active_analyses[analysis_key] = True
             coin_data = await self.process_coin(symbol, mexc, trade_type, chat_id)
             if coin_data:
                 results[f'top_{limit}_{trade_type}'].append(coin_data)
+            del self.active_analyses[analysis_key]
             await asyncio.sleep(2)
         await mexc.close()
         return results
