@@ -33,7 +33,7 @@ class MEXCClient:
         try:
             async with aiohttp.ClientSession() as session:
                 klines = {}
-                intervals = ['1m', '5m', '60m', '1d']  # 1 dakika, 5 dakika, 60 dakika, 24 saat
+                intervals = ['1m', '5m', '60m', '1d']
                 for interval in intervals:
                     if endpoint and interval == '60m':
                         async with session.get(endpoint) as response:
@@ -158,9 +158,10 @@ class DeepSeekClient:
             Grup konuşmalarındaki sorulara veya yorumlara yanıt ver. Yanıtın akıcı, profesyonel ve en az 500 karakter olsun. Sabit ifadelerden uzak dur, yaratıcı ol.
             """
             response = self.client.chat.completions.create(
-                model="deepseek-moe",
+                model="deepseek-reason",  # Model deepseek-reason olarak güncellendi
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=5000
+                max_tokens=5000,
+                stream=False
             )
             analysis_text = response.choices[0].message.content
             logger.info(f"DeepSeek ham yanıtı ({symbol}): {analysis_text}")
@@ -296,7 +297,7 @@ class DeepSeekClient:
         if bid_ask_ratio > 1.5:
             comment += f"Bid/ask oranı {bid_ask_ratio:.2f}, güçlü alım baskısı mevcut."
         elif bid_ask_ratio < 0.7:
-            comment += f"Bid/ask oranı {id_ask_ratio:.2f}, satış baskısı hakim."
+            comment += f"Bid/ask oranı {bid_ask_ratio:.2f}, satış baskısı hakim."
         else:
             comment += f"Bid/ask oranı {bid_ask_ratio:.2f}, alım ve satım baskıları dengeli."
 
@@ -616,9 +617,10 @@ class TelegramBot:
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     deepseek.client.chat.completions.create,
-                    model="deepseek-moe",
+                    model="deepseek-reason",  # Model deepseek-reason olarak güncellendi
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=5000
+                    max_tokens=5000,
+                    stream=False
                 ),
                 timeout=20
             )
