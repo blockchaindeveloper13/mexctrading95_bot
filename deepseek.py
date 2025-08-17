@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -16,6 +17,20 @@ class DeepSeekClient:
             api_key=os.getenv('DEEPSEEK_API_KEY'),
             base_url="https://api.deepseek.com"
         )
+
+    def clean_json_response(self, response):
+        """DeepSeek yanıtından markdown ve ek metinleri temizler, sadece JSON kısmını döndürür."""
+        try:
+            # Markdown ```json ve ``` etiketlerini kaldır
+            cleaned = re.sub(r'^```json\s*|\s*```$', '', response, flags=re.MULTILINE)
+            # JSON sonrası ek metinleri kaldır (örneğin, ### Key Rationale)
+            cleaned = re.sub(r'\n\s*###.*|\n\s*\*.*', '', cleaned, flags=re.MULTILINE)
+            # Gereksiz boşlukları temizle
+            cleaned = cleaned.strip()
+            return cleaned
+        except Exception as e:
+            logger.error(f"Error cleaning JSON response: {e}, original response: {response}")
+            return response
 
     def analyze_coin(self, data):
         try:
@@ -39,13 +54,13 @@ class DeepSeekClient:
                 f"4h MACD: {indicators.get('macd_4h', 'N/A')}\n"
                 f"4h MACD Signal: {indicators.get('macd_signal_4h', 'N/A')}\n"
                 "Provide a short-term trading analysis (1-4 hours) including:\n"
-                "- Pump probability (0-100%)\n"
-                "- Dump probability (0-100%)\n"
-                "- Entry price\n"
-                "- Exit price\n"
-                "- Stop loss\n"
-                "- Leverage (if applicable)\n"
-                "Return the response in JSON format."
+                "- pump_probability (0-100%)\n"
+                "- dump_probability (0-100%)\n"
+                "- entry_price\n"
+                "- exit_price\n"
+                "- stop_loss\n"
+                "- leverage (string, e.g., '2x' or 'Not recommended')\n"
+                "Return *only* a valid JSON object with these fields, no additional text, markdown, or comments."
             )
             
             response = self.client.chat.completions.create(
@@ -54,11 +69,24 @@ class DeepSeekClient:
             )
             
             analysis = response.choices[0].message.content
+            cleaned_analysis = self.clean_json_response(analysis)
             try:
                 # Try to parse JSON response
-                parsed = json.loads(analysis)
+                parsed = json.loads(cleaned_analysis)
                 if not isinstance(parsed, dict):
-                    logger.warning(f"DeepSeek response for {symbol} is not a valid JSON object: {analysis}")
+                    logger.warning(f"DeepSeek response for {symbol} is not a valid JSON object: {cleaned_analysis}")
+                    return {'short_term': {
+                        'pump_probability': 0,
+                        'dump_probability': 0,
+                        'entry_price': price,
+                        'exit_price': price,
+                        'stop_loss': price * 0.95,
+                        'leverage': 'N/A'
+                    }}
+                # Ensure the parsed JSON has the expected keys
+                required_keys = ['pump_probability', 'dump_probability', 'entry_price', 'exit_price', 'stop_loss', 'leverage']
+                if not all(key in parsed for key in required_keys):
+                    logger.warning(f"DeepSeek response for {symbol} missing required keys: {cleaned_analysis}")
                     return {'short_term': {
                         'pump_probability': 0,
                         'dump_probability': 0,
@@ -70,7 +98,7 @@ class DeepSeekClient:
                 logger.info(f"DeepSeek analysis completed for {symbol}")
                 return {'short_term': parsed}
             except json.JSONDecodeError as e:
-                logger.warning(f"DeepSeek response for {symbol} is not valid JSON: {analysis}, error: {e}")
+                logger.warning(f"DeepSeek response for {symbol} is not valid JSON: {cleaned_analysis}, error: {e}")
                 return {'short_term': {
                     'pump_probability': 0,
                     'dump_probability': 0,
