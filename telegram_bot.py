@@ -50,8 +50,9 @@ class MEXCClient:
     async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
         logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries})")
         try:
-            if timeframe not in ['1m', '5m', '15m', '30m', '60m', '4h', '1d']:
-                raise ValueError(f"Invalid timeframe: {timeframe}")
+            if not isinstance(timeframe, str) or timeframe not in ['1m', '5m', '15m', '30m', '60m', '4h', '1d']:
+                logger.error(f"Invalid or None timeframe for {symbol}: {timeframe}")
+                raise ValueError(f"Invalid or None timeframe: {timeframe}")
             for attempt in range(retries):
                 try:
                     klines = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -81,9 +82,13 @@ class MEXCClient:
 
     async def fetch_and_save_market_data(self, symbols=None, timeframes=['60m', '4h']):
         logger.info("Starting fetch_and_save_market_data")
+        if not timeframes or any(tf is None or tf not in ['1m', '5m', '15m', '30m', '60m', '4h', '1d'] for tf in timeframes):
+            logger.error(f"Invalid timeframes: {timeframes}")
+            raise ValueError(f"Invalid timeframes: {timeframes}")
+        
         markets = await self.get_exchange_info()
         usdt_pairs = [m['symbol'] for m in markets['symbols'] if m['symbol'].endswith('USDT')]
-        logger.info(f"{len(usdt_pairs)} USDT pairs found: {usdt_pairs[:5]}...")
+        Cann logger.info(f"{len(usdt_pairs)} USDT pairs found: {usdt_pairs[:5]}...")
 
         tickers = await self.get_tickers()
         logger.info(f"Fetched {len(tickers)} tickers")
@@ -108,11 +113,13 @@ class MEXCClient:
 
                 klines = {}
                 for tf in timeframes:
+                    logger.debug(f"Fetching {tf} kline for {symbol}")
                     klines[tf] = await self.get_kline(symbol, tf, limit=100, retries=3, delay=2)
                     if not klines[tf]:
                         logger.warning(f"No {tf} kline data for {symbol}, skipping")
                         break
                 if not all(klines.get(tf) for tf in timeframes):
+                    logger.warning(f"Incomplete kline data for {symbol}, skipping")
                     continue
 
                 order_book = await self.get_order_book(symbol, limit=10)
@@ -128,7 +135,7 @@ class MEXCClient:
                 logger.info(f"Data for {symbol}: price={price}, volume={volume}, "
                            f"klines_60m={len(klines.get('60m', []))}, klines_4h={len(klines.get('4h', []))}")
 
-                await asyncio.sleep(1.0)  # Rate limit için
+                await asyncio.sleep(2.0)  # Rate limit için artırıldı
             except Exception as e:
                 logger.error(f"Error processing {symbol}: {e}")
 
