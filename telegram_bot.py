@@ -1,23 +1,33 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
-from dotenv import load_dotenv
 import os
 import json
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, ContextTypes
+from dotenv import load_dotenv
 from openai import OpenAI
+from aiohttp import web
+import ssl
+import logging
 
 load_dotenv()
 
 class TelegramBot:
     def __init__(self, analyze_callback):
-        self.app = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
         self.analyze_callback = analyze_callback
         self.group_id = os.getenv('TELEGRAM_GROUP_ID')
         self.client = OpenAI(
             api_key=os.getenv('DEEPSEEK_API_KEY'),
             base_url="https://api.deepseek.com"
         )
+        self.app = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+        self.web_app = None  # aiohttp web uygulaması
 
-    async def start(self, update: Update, context):
+        # Handlers
+        self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CallbackQueryHandler(self.button))
+        self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
+        self.app.add_handler(MessageHandler(Filters.text & ~Filters.command, self.chat))
+
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("Top 100 Analiz Yap", callback_data='top_100')],
             [InlineKeyboardButton("Top 300 Analiz Yap", callback_data='top_300')]
@@ -25,7 +35,7 @@ class TelegramBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Analiz için butonları kullanabilirsiniz:", reply_markup=reply_markup)
 
-    async def button(self, update: Update, context):
+    async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         limit = 100 if query.data == 'top_100' else 300
@@ -33,7 +43,7 @@ class TelegramBot:
         message = self.format_results(results)
         await context.bot.send_message(chat_id=self.group_id, text=message)
 
-    async def chat(self, update: Update, context):
+    async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
@@ -43,7 +53,7 @@ class TelegramBot:
         except Exception as e:
             await update.message.reply_text(f"Error in chat: {e}")
 
-    async def show_analysis(self, update: Update, context):
+    async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with open('analysis.json', 'r') as f:
                 data = json.load(f)
@@ -64,9 +74,19 @@ class TelegramBot:
                     message += f"- DeepSeek: {json.dumps(coin['deepseek_analysis']['short_term'])}\n"
         return message
 
+    async def webhook_handler(self, request):
+        update = Update.de_json(await request.json(), self.app.bot)
+        await self.app.process_update(update)
+        return web.Response(text="OK")
+
     def run(self):
-        self.app.add_handler(CommandHandler("start", self.start))
-        self.app.add_handler(CallbackQueryHandler(self.button))
-        self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
-        self.app.add_handler(MessageHandler(Filters.text & ~Filters.command, self.chat))
-        self.app.run_polling()
+        # Webhook için aiohttp server
+        self.web_app = web.Application()
+        self.web_app.router.add_post('/webhook', self.webhook_handler)
+
+        # Webhook ayarını Telegram'a bildir
+        webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
+        self.app.bot.set_webhook(url=webhook_url)
+
+        # Server'ı başlat
+        web.run_app(self.web_app, host='0.0.0.0', port=int(os.getenv('PORT', 8443)))
