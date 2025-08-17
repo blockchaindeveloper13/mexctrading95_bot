@@ -13,23 +13,23 @@ from dotenv import load_dotenv
 from datetime import datetime
 import re
 
-# Logging configuration
+# Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# GitHub endpoints.json URL
+# GitHub endpoints.json URL'si
 ENDPOINTS_JSON_URL = "https://raw.githubusercontent.com/blockchaindeveloper13/mexctrading95_bot/main/endpoints.json"
 
 class MEXCClient:
-    """Handles MEXC API communication."""
+    """MEXC API ile iletişim kurar."""
     def __init__(self):
         self.base_url = "https://api.mexc.com"
 
     async def fetch_and_save_market_data(self, symbol, endpoint=None):
-        """Fetches market data for the specified symbol."""
-        logger.info(f"Fetching market data for {symbol}")
+        """Belirtilen sembol için piyasa verisi çeker."""
+        logger.info(f"{symbol} için piyasa verisi çekiliyor")
         try:
             async with aiohttp.ClientSession() as session:
                 klines = {}
@@ -38,7 +38,7 @@ class MEXCClient:
                         if response.status == 200:
                             klines['60m'] = await response.json()
                         else:
-                            logger.warning(f"Failed to fetch 60m kline data for {symbol}: {response.status}")
+                            logger.warning(f"{symbol} için 60m kline verisi alınamadı: {response.status}")
                             klines['60m'] = []
                 else:
                     url = f"{self.base_url}/api/v3/klines?symbol={symbol}&interval=60m&limit=100"
@@ -46,7 +46,7 @@ class MEXCClient:
                         if response.status == 200:
                             klines['60m'] = await response.json()
                         else:
-                            logger.warning(f"Failed to fetch 60m kline data for {symbol}: {response.status}")
+                            logger.warning(f"{symbol} için 60m kline verisi alınamadı: {response.status}")
                             klines['60m'] = []
                 await asyncio.sleep(0.5)
 
@@ -66,24 +66,24 @@ class MEXCClient:
                     'price': float(ticker.get('price', 0.0))
                 }
         except Exception as e:
-            logger.error(f"Error fetching data for {symbol}: {e}")
+            logger.error(f"{symbol} için veri çekilirken hata: {e}")
             return None
 
     async def validate_symbol(self, symbol):
-        """Validates if the symbol is valid."""
-        logger.info(f"Validating symbol {symbol}")
+        """Sembolün geçerli olup olmadığını kontrol eder."""
+        logger.info(f"{symbol} sembolü doğrulanıyor")
         try:
             async with aiohttp.ClientSession() as session:
                 url = f"{self.base_url}/api/v3/ticker/price?symbol={symbol}"
                 async with session.get(url) as response:
                     return response.status == 200
         except Exception as e:
-            logger.error(f"Error validating {symbol}: {e}")
+            logger.error(f"{symbol} doğrulanırken hata: {e}")
             return False
 
     async def get_top_coins(self, limit):
-        """Fetches top coins by volume."""
-        logger.info(f"Fetching top {limit} coins")
+        """En yüksek hacimli coin'leri alır."""
+        logger.info(f"Top {limit} coin alınıyor")
         try:
             async with aiohttp.ClientSession() as session:
                 url = f"{self.base_url}/api/v3/ticker/24hr"
@@ -94,60 +94,57 @@ class MEXCClient:
                         sorted_coins = sorted(usdt_pairs, key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
                         return [coin['symbol'] for coin in sorted_coins[:limit]]
                     else:
-                        logger.warning("Failed to fetch top coins")
+                        logger.warning("Top coin'ler alınamadı")
                         return []
         except Exception as e:
-            logger.error(f"Error fetching top coins: {e}")
+            logger.error(f"Top coin'ler alınırken hata: {e}")
             return []
 
     async def close(self):
-        """Closes MEXC API connection."""
-        logger.info("Closing MEXCClient connection")
+        """MEXC API bağlantısını kapatır."""
+        logger.info("MEXCClient bağlantısı kapatılıyor")
         pass
 
 class DeepSeekClient:
-    """Handles DeepSeek API for coin analysis."""
+    """DeepSeek API ile coin analizi yapar."""
     def __init__(self):
-        self.client = Open
-
-AI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
-    self.storage = Storage()
+        self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
+        self.storage = Storage()  # Doğru girinti: 4 boşluk
 
     def analyze_coin(self, symbol, data, trade_type, chat_id):
-        """Performs coin analysis using DeepSeek API."""
-        logger.info(f"Analyzing {symbol} for {trade_type}, chat_id={chat_id}")
+        """DeepSeek API ile coin analizi yapar."""
+        logger.info(f"{symbol} için {trade_type} analizi yapılıyor, chat_id={chat_id}")
         try:
             conversations = self.storage.load_conversations()
             group_context = conversations.get(str(chat_id), [])
             context_str = "\n".join([f"[{c['timestamp']}] {c['message']}" for c in group_context])
 
             prompt = f"""
-            Analyze {symbol} for a {trade_type} trading strategy. The response must be in Turkish, at least 500 characters, and up to 5000 characters. Use the provided market data and technical indicators to create a unique, detailed, and context-aware analysis. Avoid repetitive or formulaic phrases, and ensure the tone is natural, professional, and engaging. Incorporate the group conversation history to personalize the analysis and directly address any questions or comments (e.g., 'Will it rise?').
+            {symbol} için {trade_type} işlem stratejisi analizi yap. Yanıt tamamen Türkçe olmalı, minimum 500 karakter ve maksimum 5000 karakter uzunluğunda olmalı. Aşağıdaki piyasa verilerini ve teknik göstergeleri kullanarak özgün, detaylı ve bağlama uygun bir analiz üret. Sabit veya tekrarlayan ifadelerden kaçın, doğal ve profesyonel bir üslup kullan. Grup konuşma geçmişini dikkate alarak analizi kişiselleştir ve geçmişteki sorulara veya yorumlara yanıt ver (örneğin, 'yükselecek mi?').
 
-            Market Data:
-            - Current Price: {data['price']} USDT
-            - Volume Change:
-              - 60m: {data.get('indicators', {}).get('volume_change_60m', 'Unknown')}%
-            - RSI:
-              - 60m: {data.get('indicators', {}).get('rsi_60m', 'Unknown')}
-            - MACD:
-              - 60m: {data.get('indicators', {}).get('macd_60m', 'Unknown')}
-            - Bid/Ask Ratio: {data.get('indicators', {}).get('bid_ask_ratio', 'Unknown')}
+            - Mevcut Fiyat: {data['price']} USDT
+            - Hacim Değişimi: 
+              - 60m: {data.get('indicators', {}).get('volume_change_60m', 'Bilinmiyor')}%
+            - RSI: 
+              - 60m: {data.get('indicators', {}).get('rsi_60m', 'Bilinmiyor')}
+            - MACD: 
+              - 60m: {data.get('indicators', {}).get('macd_60m', 'Bilinmiyor')}
+            - Bid/Ask Oranı: {data.get('indicators', {}).get('bid_ask_ratio', 'Bilinmiyor')}
 
-            Group Conversation History:
-            {context_str if context_str else 'No group conversation history available.'}
+            Grup konuşma geçmişi:
+            {context_str if context_str else 'Grup konuşma geçmişi yok.'}
 
-            Include the following in your analysis, but the format and style are entirely up to you:
-            - Recommended entry, exit, and stop-loss prices (in USDT, determined solely by you).
-            - Leverage suggestion (e.g., 1x for spot, appropriate level for futures).
-            - Pump and dump probabilities (as percentages, based on indicators).
-            - Trend prediction (bullish, bearish, or neutral).
-            - Support and resistance levels (in USDT).
-            - Risk/reward ratio.
-            - Fundamental analysis including market sentiment, volume trends, and buy/sell pressure.
-            - A unique comment with a Buy/Sell/Hold recommendation, supported by detailed reasoning.
+            Analizinde şu bilgileri dahil et, ancak format ve üslup tamamen sana bağlı:
+            - Önerilen giriş, çıkış ve stop-loss fiyatları (USDT cinsinden, yalnızca senin belirlediğin değerler kullanılacak).
+            - Kaldıraç önerisi (örneğin, spot için 1x, vadeli için uygun bir seviye).
+            - Pump ve dump olasılıkları (% cinsinden, göstergelere dayalı).
+            - Trend tahmini (yükseliş, düşüş veya nötr).
+            - Destek ve direnç seviyeleri (USDT cinsinden).
+            - Risk/ödül oranı.
+            - Piyasa duyarlılığı, hacim trendleri ve alım/satım baskısını içeren temel analiz.
+            - Özgün bir yorum (Al/Sat/Bekle önerisi ve gerekçeleri, yaratıcı ve bağlama uygun).
 
-            Respond to any questions or comments in the group conversation history. Ensure the response is creative, avoids clichés, and provides actionable insights. Minimum 500 characters.
+            Grup konuşmalarındaki sorulara veya yorumlara yanıt ver. Yanıtın akıcı, profesyonel ve en az 500 karakter olsun. Sabit ifadelerden uzak dur, yaratıcı ol.
             """
             response = self.client.chat.completions.create(
                 model="deepseek-moe",
@@ -155,13 +152,13 @@ AI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
                 max_tokens=5000
             )
             analysis_text = response.choices[0].message.content
-            logger.info(f"DeepSeek raw response for {symbol}: {analysis_text}")
+            logger.info(f"DeepSeek ham yanıtı ({symbol}): {analysis_text}")
             if len(analysis_text) < 500:
-                logger.warning(f"DeepSeek response for {symbol} is less than 500 characters: {len(analysis_text)}")
+                logger.warning(f"DeepSeek yanıtı ({symbol}) 500 karakterden kısa: {len(analysis_text)} karakter")
                 analysis_text += " " * (500 - len(analysis_text))
             return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
         except Exception as e:
-            logger.error(f"Error during DeepSeek analysis for {symbol}: {e}")
+            logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {e}")
             return {
                 'short_term': {
                     'entry_price': data['price'],
@@ -170,17 +167,17 @@ AI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
                     'leverage': '1x' if trade_type == 'spot' else '3x',
                     'pump_probability': 50,
                     'dump_probability': 50,
-                    'trend': 'Neutral',
+                    'trend': 'Nötr',
                     'support_level': data['price'] * 0.95,
                     'resistance_level': data['price'] * 1.05,
                     'risk_reward_ratio': 1.0,
-                    'fundamental_analysis': 'Analysis failed: Insufficient data.',
+                    'fundamental_analysis': 'Analiz başarısız: Veri yetersiz.',
                     'comment': self.generate_dynamic_default_comment(data)
                 }
             }
 
     def parse_deepseek_response(self, text, current_price):
-        """Parses DeepSeek response robustly."""
+        """DeepSeek yanıtını esnek bir şekilde ayrıştırır."""
         try:
             result = {
                 'entry_price': None,
@@ -189,12 +186,12 @@ AI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
                 'leverage': '1x',
                 'pump_probability': 50,
                 'dump_probability': 50,
-                'trend': 'Neutral',
+                'trend': 'Nötr',
                 'support_level': None,
                 'resistance_level': None,
                 'risk_reward_ratio': 1.0,
-                'fundamental_analysis': text[:500] if text else 'Analysis failed',
-                'comment': text if text else 'Analysis failed: Insufficient data.'
+                'fundamental_analysis': text[:500] if text else 'Analiz başarısız',
+                'comment': text if text else 'Analiz başarısız: Veri yetersiz.'
             }
 
             lines = text.split('\n')
@@ -214,7 +211,7 @@ AI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
                 elif 'dump olasılığı' in line and re.search(r'\d+', line):
                     result['dump_probability'] = int(re.search(r'\d+', line).group(0))
                 elif 'trend' in line:
-                    result['trend'] = line.split(':')[1].strip() if ':' in line else 'Neutral'
+                    result['trend'] = line.split(':')[1].strip() if ':' in line else 'Nötr'
                 elif 'destek seviyesi' in line and number_match:
                     result['support_level'] = float(number_match.group(0))
                 elif 'direnç seviyesi' in line and number_match:
@@ -226,7 +223,7 @@ AI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
                 elif 'yorum' in line:
                     result['comment'] = line.split(':')[1].strip() if ':' in line else text
 
-            # Fallback to current price only if DeepSeek fails to provide values
+            # Fiyatlar DeepSeek tarafından sağlanmazsa mevcut fiyat üzerinden yedekleme
             if result['entry_price'] is None:
                 result['entry_price'] = current_price
             if result['exit_price'] is None:
@@ -240,7 +237,7 @@ AI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
 
             return result
         except Exception as e:
-            logger.error(f"Error parsing DeepSeek response: {e}")
+            logger.error(f"DeepSeek yanıtı ayrıştırılırken hata: {e}")
             return {
                 'entry_price': current_price,
                 'exit_price': current_price * 1.02,
@@ -248,85 +245,85 @@ AI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
                 'leverage': '1x',
                 'pump_probability': 50,
                 'dump_probability': 50,
-                'trend': 'Neutral',
+                'trend': 'Nötr',
                 'support_level': current_price * 0.95,
                 'resistance_level': current_price * 1.05,
                 'risk_reward_ratio': 1.0,
-                'fundamental_analysis': 'Analysis failed',
+                'fundamental_analysis': 'Analiz başarısız',
                 'comment': self.generate_dynamic_default_comment({'price': current_price})
             }
 
     def generate_dynamic_default_comment(self, data):
-        """Generates a dynamic default comment based on indicators."""
+        """Göstergelere dayalı dinamik bir varsayılan yorum üretir."""
         indicators = data.get('indicators', {})
         rsi_60m = indicators.get('rsi_60m', 0.0)
         volume_change_60m = indicators.get('volume_change_60m', 0.0)
         macd_60m = indicators.get('macd_60m', 0.0)
         bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
 
-        comment = "Market analysis indicates uncertainty at this time. "
+        comment = "Piyasa şu anda belirsiz bir seyir izliyor. "
         if rsi_60m > 70:
-            comment += f"RSI at {rsi_60m:.2f} suggests overbought conditions, indicating potential for a price correction. "
+            comment += f"RSI {rsi_60m:.2f} ile aşırı alım bölgesinde, düzeltme riski mevcut. "
         elif rsi_60m < 30:
-            comment += f"RSI at {rsi_60m:.2f} indicates oversold conditions, possibly presenting a buying opportunity. "
+            comment += f"RSI {rsi_60m:.2f} ile aşırı satım bölgesinde, alım fırsatı değerlendirilebilir. "
         else:
-            comment += f"RSI at {rsi_60m:.2f} is neutral, showing no clear trend direction. "
+            comment += f"RSI {rsi_60m:.2f} ile nötr, belirgin bir trend sinyali yok. "
 
         if volume_change_60m > 100:
-            comment += f"Volume surged by {volume_change_60m:.2f}%, suggesting increased market activity. "
+            comment += f"Hacimde %{volume_change_60m:.2f} artış var, piyasada hareketlilik bekleniyor. "
         elif volume_change_60m < -50:
-            comment += f"Volume dropped by {volume_change_60m:.2f}%, indicating a quiet market. "
+            comment += f"Hacimde %{volume_change_60m:.2f} düşüş var, piyasa durgun görünüyor. "
         else:
-            comment += f"Volume changed by {volume_change_60m:.2f}%, requiring close monitoring. "
+            comment += f"Hacimde %{volume_change_60m:.2f} değişim, dikkatli izlenmeli. "
 
         if macd_60m > 0:
-            comment += f"MACD at {macd_60m:.2f} signals a bullish trend. "
+            comment += f"MACD {macd_60m:.2f} ile yükseliş eğilimi gösteriyor. "
         elif macd_60m < 0:
-            comment += f"MACD at {macd_60m:.2f} suggests a bearish trend. "
+            comment += f"MACD {macd_60m:.2f} ile düşüş eğilimi sinyali veriyor. "
 
         if bid_ask_ratio > 1.5:
-            comment += f"Bid/ask ratio of {bid_ask_ratio:.2f} indicates strong buying pressure."
+            comment += f"Bid/ask oranı {bid_ask_ratio:.2f}, güçlü alım baskısı mevcut."
         elif bid_ask_ratio < 0.7:
-            comment += f"Bid/ask ratio of {bid_ask_ratio:.2f} shows dominant selling pressure."
+            comment += f"Bid/ask oranı {bid_ask_ratio:.2f}, satış baskısı hakim."
         else:
-            comment += f"Bid/ask ratio of {bid_ask_ratio:.2f} reflects balanced buying and selling."
+            comment += f"Bid/ask oranı {bid_ask_ratio:.2f}, alım ve satım baskıları dengeli."
 
         if len(comment) < 500:
             comment += " " * (500 - len(comment))
         return comment[:500]
 
 class Storage:
-    """Stores analysis results and group conversations."""
+    """Analiz sonuçlarını ve grup konuşmalarını depolar."""
     def __init__(self):
         self.file_path = "analysis.json"
         self.conversation_file_path = "conversations.json"
 
     def save_analysis(self, data):
-        """Saves analysis results to a JSON file."""
-        logger.info("Saving analysis results")
+        """Analiz sonuçlarını JSON dosyasına kaydeder."""
+        logger.info("Analiz sonuçları kaydediliyor")
         try:
             existing_data = self.load_analysis()
             existing_data.update(data)
             with open(self.file_path, 'w') as f:
                 json.dump(existing_data, f, indent=2)
         except Exception as e:
-            logger.error(f"Error saving analysis: {e}")
+            logger.error(f"Analiz kaydedilirken hata: {e}")
 
     def load_analysis(self):
-        """Loads analysis results from a JSON file."""
-        logger.info("Loading analysis results")
+        """Analiz sonuçlarını JSON dosyasından yükler."""
+        logger.info("Analiz sonuçları yükleniyor")
         try:
             with open(self.file_path, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
             return {}
         except Exception as e:
-            logger.error(f"Error loading analysis: {e}")
+            logger.error(f"Analiz yüklenirken hata: {e}")
             return {}
 
     def save_conversation(self, chat_id, message, timestamp):
-        """Saves group conversations."""
-        logger.info(f"Saving conversation for chat_id={chat_id}")
+        """Grup konuşmalarını kaydeder."""
+        logger.info(f"Konuşma kaydediliyor: chat_id={chat_id}")
         try:
             conversations = self.load_conversations()
             if str(chat_id) not in conversations:
@@ -339,23 +336,23 @@ class Storage:
             with open(self.conversation_file_path, 'w') as f:
                 json.dump(conversations, f, indent=2)
         except Exception as e:
-            logger.error(f"Error saving conversation: {e}")
+            logger.error(f"Konuşma kaydedilirken hata: {e}")
 
     def load_conversations(self):
-        """Loads group conversations."""
-        logger.info("Loading conversations")
+        """Grup konuşmalarını yükler."""
+        logger.info("Konuşmalar yükleniyor")
         try:
             with open(self.conversation_file_path, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
             return {}
         except Exception as e:
-            logger.error(f"Error loading conversations: {e}")
+            logger.error(f"Konuşmalar yüklenirken hata: {e}")
             return {}
 
 def calculate_indicators(kline_60m, order_book):
-    """Calculates technical indicators for 60m timeframe."""
-    logger.info("Calculating technical indicators")
+    """60m zaman dilimi için teknik göstergeleri hesaplar."""
+    logger.info("Teknik göstergeler hesaplanıyor")
     try:
         indicators = {}
         if kline_60m and len(kline_60m) > 1:
@@ -385,7 +382,7 @@ def calculate_indicators(kline_60m, order_book):
 
         return indicators
     except Exception as e:
-        logger.error(f"Error calculating indicators: {e}")
+        logger.error(f"Göstergeler hesaplanırken hata: {e}")
         return {
             'volume_change_60m': 0.0,
             'rsi_60m': 0.0,
@@ -394,7 +391,7 @@ def calculate_indicators(kline_60m, order_book):
         }
 
 def explain_indicators(indicators):
-    """Explains indicators in a user-friendly way."""
+    """Göstergeleri anlaşılır şekilde açıklar."""
     explanations = []
     volume_change = indicators.get('volume_change_60m', 0.0)
     rsi = indicators.get('rsi_60m', 0.0)
@@ -402,66 +399,66 @@ def explain_indicators(indicators):
     
     if isinstance(volume_change, (int, float)):
         if volume_change > 100:
-            vol_explain = f"60m: Volume increased by {volume_change:.2f}%, indicating strong market activity."
+            vol_explain = f"60m: Hacimde %{volume_change:.2f} artış, güçlü alım/satım hareketi olabilir."
         elif volume_change > 0:
-            vol_explain = f"60m: Volume rose by {volume_change:.2f}%, showing growing interest."
+            vol_explain = f"60m: Hacimde %{volume_change:.2f} artış, ilgi artıyor."
         elif volume_change < -50:
-            vol_explain = f"60m: Volume dropped by {volume_change:.2f}%, suggesting a quiet market."
+            vol_explain = f"60m: Hacimde %{volume_change:.2f} düşüş, piyasada sakinlik var."
         else:
-            vol_explain = f"60m: Volume changed by {volume_change:.2f}%, indicating stable activity."
+            vol_explain = f"60m: Hacimde %{volume_change:.2f} değişim, stabil hareket."
     else:
-        vol_explain = "60m: No volume data available."
+        vol_explain = "60m: Hacim verisi yok."
     explanations.append(vol_explain)
 
     if isinstance(rsi, (int, float)):
         if rsi > 70:
-            rsi_explain = f"60m: RSI at {rsi:.2f}, in overbought territory, suggesting a potential pullback."
+            rsi_explain = f"60m: RSI {rsi:.2f}, aşırı alım bölgesinde, düşüş riski olabilir."
         elif rsi < 30:
-            rsi_explain = f"60m: RSI at {rsi:.2f}, in oversold territory, indicating a possible buying opportunity."
+            rsi_explain = f"60m: RSI {rsi:.2f}, aşırı satım bölgesinde, alım fırsatı olabilir."
         else:
-            rsi_explain = f"60m: RSI at {rsi:.2f}, in neutral territory with no clear signal."
+            rsi_explain = f"60m: RSI {rsi:.2f}, nötr bölgede, net bir sinyal yok."
     else:
-        rsi_explain = "60m: No RSI data available."
+        rsi_explain = "60m: RSI verisi yok."
     explanations.append(rsi_explain)
 
     if isinstance(macd, (int, float)):
         if macd > 0:
-            macd_explain = f"60m: MACD at {macd:.2f}, signaling a bullish trend."
+            macd_explain = f"60m: MACD {macd:.2f}, yükseliş eğilimi sinyali."
         elif macd < 0:
-            macd_explain = f"60m: MACD at {macd:.2f}, indicating a bearish trend."
+            macd_explain = f"60m: MACD {macd:.2f}, düşüş eğilimi sinyali."
         else:
-            macd_explain = f"60m: MACD at {macd:.2f}, showing a neutral trend."
+            macd_explain = f"60m: MACD {macd:.2f}, nötr sinyal."
     else:
-        macd_explain = "60m: No MACD data available."
+        macd_explain = "60m: MACD verisi yok."
     explanations.append(macd_explain)
 
     bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
     if isinstance(bid_ask_ratio, (int, float)):
         if bid_ask_ratio > 1.5:
-            bid_ask_explain = f"Bid/Ask Ratio: {bid_ask_ratio:.2f}, indicating strong buying pressure."
+            bid_ask_explain = f"Bid/Ask Oranı: {bid_ask_ratio:.2f}, güçlü alım baskısı var."
         elif bid_ask_ratio < 0.7:
-            bid_ask_explain = f"Bid/Ask Ratio: {bid_ask_ratio:.2f}, showing dominant selling pressure."
+            bid_ask_explain = f"Bid/Ask Oranı: {bid_ask_ratio:.2f}, satış baskısı hakim."
         else:
-            bid_ask_explain = f"Bid/Ask Ratio: {bid_ask_ratio:.2f}, reflecting balanced buying and selling."
+            bid_ask_explain = f"Bid/Ask Oranı: {bid_ask_ratio:.2f}, dengeli alım/satım."
     else:
-        bid_ask_explain = "Bid/Ask Ratio: No data available."
+        bid_ask_explain = "Bid/Ask Oranı: Veri yok."
     explanations.append(bid_ask_explain)
 
     return "\n".join(explanations)
 
 class TelegramBot:
+    """Telegram botunu başlatır."""
     def __init__(self):
-        """Initializes the Telegram bot."""
-        logger.info("Initializing TelegramBot")
+        logger.info("TelegramBot başlatılıyor")
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
         self.storage = Storage()
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not bot_token:
-            logger.error("TELEGRAM_BOT_TOKEN is missing")
-            raise ValueError("TELEGRAM_BOT_TOKEN is missing")
+            logger.error("TELEGRAM_BOT_TOKEN eksik")
+            raise ValueError("TELEGRAM_BOT_TOKEN eksik")
         try:
             self.app = Application.builder().token(bot_token).build()
-            logger.info("Application initialized")
+            logger.info("Application başlatıldı")
             self.app.add_handler(CommandHandler("start", self.start))
             self.app.add_handler(CommandHandler("analyze", self.analyze))
             self.app.add_handler(CallbackQueryHandler(self.button))
@@ -471,78 +468,78 @@ class TelegramBot:
             self.active_analyses = {}
             if self.app.job_queue:
                 self.app.job_queue.start()
-                logger.info("Job queue started")
+                logger.info("Job queue başlatıldı")
         except Exception as e:
-            logger.error(f"Error initializing Application: {e}")
+            logger.error(f"Application başlatılırken hata: {e}")
             raise
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Displays menu for the start command."""
-        logger.info(f"Start command received, chat_id={update.effective_chat.id}")
+        """Start komutu için menü gösterir."""
+        logger.info(f"Start komutu alındı, chat_id={update.effective_chat.id}")
         keyboard = [
-            [InlineKeyboardButton("Top 10 Spot Analysis", callback_data='top_10_spot')],
-            [InlineKeyboardButton("Top 100 Spot Analysis", callback_data='top_100_spot')],
-            [InlineKeyboardButton("Top 10 Futures Analysis", callback_data='top_10_futures')],
-            [InlineKeyboardButton("Top 100 Futures Analysis", callback_data='top_100_futures')]
+            [InlineKeyboardButton("Top 10 Spot Analizi", callback_data='top_10_spot')],
+            [InlineKeyboardButton("Top 100 Spot Analizi", callback_data='top_100_spot')],
+            [InlineKeyboardButton("Top 10 Vadeli Analizi", callback_data='top_10_futures')],
+            [InlineKeyboardButton("Top 100 Vadeli Analizi", callback_data='top_100_futures')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "Use the buttons for analysis or the /analyze <symbol> [trade_type] command (e.g., /analyze BTCUSDT spot).",
+            "Analiz için butonları kullanabilir veya /analyze <symbol> [trade_type] komutuyla coin analizi yapabilirsiniz (örn. /analyze BTCUSDT spot).",
             reply_markup=reply_markup
         )
 
     async def analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Performs analysis for the specified symbol."""
-        logger.info(f"Analyze command received: {update.message.text}")
+        """Belirtilen sembol için analiz yapar."""
+        logger.info(f"Analyze komutu alındı: {update.message.text}")
         try:
             args = update.message.text.split()
             if len(args) < 2:
-                await update.message.reply_text("Please provide a symbol. Example: /analyze BTCUSDT spot")
+                await update.message.reply_text("Lütfen bir sembol girin. Örnek: /analyze BTCUSDT spot")
                 return
             symbol = args[1].upper()
             trade_type = args[2].lower() if len(args) > 2 else 'spot'
             if trade_type not in ['spot', 'futures']:
-                await update.message.reply_text("Trade type must be 'spot' or 'futures'. Example: /analyze BTCUSDT spot")
+                await update.message.reply_text("Trade tipi 'spot' veya 'futures' olmalı. Örnek: /analyze BTCUSDT spot")
                 return
             if not symbol.endswith('USDT'):
-                await update.message.reply_text("Symbol must be a USDT pair. Example: /analyze BTCUSDT")
+                await update.message.reply_text("Sembol USDT çifti olmalı. Örnek: /analyze BTCUSDT")
                 return
 
             analysis_key = f"{symbol}_{trade_type}_{update.effective_chat.id}"
             if analysis_key in self.active_analyses:
-                await update.message.reply_text(f"Analysis for {symbol} ({trade_type}) is already in progress. Please wait.")
+                await update.message.reply_text(f"{symbol} için {trade_type} analizi zaten yapılıyor, lütfen bekleyin.")
                 return
             self.active_analyses[analysis_key] = True
 
             mexc = MEXCClient()
             if not await mexc.validate_symbol(symbol):
                 del self.active_analyses[analysis_key]
-                await update.message.reply_text(f"Error: {symbol} is an invalid trading pair.")
+                await update.message.reply_text(f"Hata: {symbol} geçersiz bir işlem çifti.")
                 return
 
-            await update.message.reply_text(f"Analyzing {symbol} for {trade_type}...")
+            await update.message.reply_text(f"{symbol} için {trade_type} analizi yapılıyor...")
             data = await self.process_coin(symbol, mexc, trade_type, update.effective_chat.id)
             await mexc.close()
             del self.active_analyses[analysis_key]
 
             if not data:
-                await update.message.reply_text(f"Failed to analyze {symbol}.")
+                await update.message.reply_text(f"{symbol} için analiz yapılamadı.")
         except Exception as e:
-            logger.error(f"Error in analyze command: {e}")
-            await update.message.reply_text(f"Error: {str(e)}")
+            logger.error(f"Analyze komutunda hata: {e}")
+            await update.message.reply_text(f"Hata: {str(e)}")
             if analysis_key in self.active_analyses:
                 del self.active_analyses[analysis_key]
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handles button clicks."""
+        """Buton tıklamalarını işler."""
         query = update.callback_query
         await query.answer()
-        logger.info(f"Button clicked: {query.data}")
+        logger.info(f"Buton tıklandı: {query.data}")
         try:
             parts = query.data.split('_')
             limit = int(parts[1])
             trade_type = parts[2]
-            await query.message.reply_text(f"Performing {trade_type.upper()} analysis (Top {limit})...")
+            await query.message.reply_text(f"{trade_type.upper()} analizi yapılıyor (Top {limit})...")
             data = {'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type}
             if self.app.job_queue is None:
                 await self.analyze_and_send(context, data)
@@ -554,33 +551,33 @@ class TelegramBot:
                     chat_id=self.group_id
                 )
         except Exception as e:
-            logger.error(f"Error in button handler: {e}")
-            await query.message.reply_text(f"Error: {str(e)}")
+            logger.error(f"Buton işleyicisinde hata: {e}")
+            await query.message.reply_text(f"Hata: {str(e)}")
 
     async def analyze_and_send(self, context: ContextTypes.DEFAULT_TYPE, data=None):
-        """Performs analysis for top coins and sends results."""
+        """Top coin'ler için analiz yapar ve gönderir."""
         if data is None:
             data = context.job.data
         chat_id = data['chat_id']
         limit = data['limit']
         trade_type = data['trade_type']
-        logger.info(f"Analyzing: chat_id={chat_id}, limit={limit}, trade_type={trade_type}")
+        logger.info(f"Analiz yapılıyor: chat_id={chat_id}, limit={limit}, trade_type={trade_type}")
         try:
             if limit == 100 and trade_type == 'spot':
                 results = await self.analyze_top_100_from_endpoints(chat_id, trade_type)
             else:
                 results = await self.analyze_coins(limit, trade_type, chat_id)
             if not results.get(f'top_{limit}_{trade_type}'):
-                await context.bot.send_message(chat_id=chat_id, text=f"No results for Top {limit} {trade_type} analysis.")
-            logger.info(f"Completed analysis for Top {limit} {trade_type}")
+                await context.bot.send_message(chat_id=chat_id, text=f"Top {limit} {trade_type} analizi için sonuç bulunamadı.")
+            logger.info(f"Top {limit} {trade_type} için analiz tamamlandı")
         except Exception as e:
-            logger.error(f"Error in analyze_and_send: {e}")
-            await context.bot.send_message(chat_id=chat_id, text=f"Error during {trade_type} analysis: {str(e)}")
+            logger.error(f"analyze_and_send sırasında hata: {e}")
+            await context.bot.send_message(chat_id=chat_id, text=f"{trade_type} analizi sırasında hata: {str(e)}")
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Responds to non-command messages in the group."""
+        """Genel mesajlara yanıt verir ve konuşmaları kaydeder."""
         message_text = update.message.text
-        logger.info(f"Received message: {message_text}")
+        logger.info(f"Mesaj alındı: {message_text}")
         try:
             self.storage.save_conversation(
                 chat_id=update.effective_chat.id,
@@ -593,11 +590,11 @@ class TelegramBot:
             context_str = "\n".join([f"[{c['timestamp']}] {c['message']}" for c in group_context])
 
             prompt = f"""
-            Respond to the following message in Turkish, providing a detailed and context-aware answer based on the group conversation history. The response should be at least 500 characters, natural, professional, and engaging. If the message is a question about a specific coin (e.g., 'Will BTCUSDT rise?'), provide a brief market analysis based on general knowledge or recent trends, and address the question directly. Avoid repetitive phrases and incorporate the conversation history for personalization.
+            Aşağıdaki grup konuşma mesajına Türkçe, doğal ve bağlama uygun bir yanıt ver. Yanıt minimum 500 karakter, maksimum 5000 karakter olmalı. Grup konuşma geçmişini dikkate alarak mesajı kişiselleştir ve eğer mesaj bir soru içeriyorsa (örneğin, 'yükselecek mi?'), bu soruya doğrudan hitap et. Sabit veya tekrarlayan ifadelerden kaçın, akıcı ve profesyonel bir üslup kullan. Eğer mesaj bir coin'le ilgiliyse (örneğin, 'BTCUSDT yükselecek mi?'), genel piyasa bilgisi veya son trendlere dayanarak kısa bir analiz yap.
 
-            Message: {message_text}
-            Group Conversation History:
-            {context_str if context_str else 'No group conversation history available.'}
+            Mesaj: {message_text}
+            Grup konuşma geçmişi:
+            {context_str if context_str else 'Grup konuşma geçmişi yok.'}
             """
             response = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -613,12 +610,12 @@ class TelegramBot:
                 response_text += " " * (500 - len(response_text))
             await update.message.reply_text(response_text)
         except Exception as e:
-            logger.error(f"Error in chat: {e}")
-            await update.message.reply_text(f"Error: {str(e)}")
+            logger.error(f"Chat sırasında hata: {e}")
+            await update.message.reply_text(f"Hata: {str(e)}")
 
     async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Displays saved analysis results."""
-        logger.info("Show_analysis command received")
+        """Kaydedilen analizleri gösterir."""
+        logger.info("show_analysis komutu alındı")
         try:
             data = self.storage.load_analysis()
             messages = []
@@ -630,56 +627,56 @@ class TelegramBot:
             if messages:
                 await update.message.reply_text("\n\n".join(messages))
             else:
-                await update.message.reply_text("No analysis results found.")
+                await update.message.reply_text("Analiz sonucu bulunamadı.")
         except Exception as e:
-            logger.error(f"Error loading analysis: {e}")
-            await update.message.reply_text(f"Error: {str(e)}")
+            logger.error(f"Analiz yüklenirken hata: {e}")
+            await update.message.reply_text(f"Hata: {str(e)}")
 
     def format_results(self, coin_data, trade_type, symbol):
-        """Formats analysis results."""
-        logger.info(f"Formatting results for {symbol} ({trade_type})")
+        """Analiz sonuçlarını formatlar."""
+        logger.info(f"{symbol} ({trade_type}) için sonuçlar biçimlendiriliyor")
         indicators = coin_data.get('indicators', {})
         analysis = coin_data.get('deepseek_analysis', {}).get('short_term', {})
-        volume_changes = indicators.get('volume_change_60m', 'Unknown')
-        bid_ask_ratio = indicators.get('bid_ask_ratio', 'Unknown')
-        rsi_values = indicators.get('rsi_60m', 'Unknown')
-        macd_values = indicators.get('macd_60m', 'Unknown')
+        volume_changes = indicators.get('volume_change_60m', 'Bilinmiyor')
+        bid_ask_ratio = indicators.get('bid_ask_ratio', 'Bilinmiyor')
+        rsi_values = indicators.get('rsi_60m', 'Bilinmiyor')
+        macd_values = indicators.get('macd_60m', 'Bilinmiyor')
         try:
             message = (
-                f" {symbol} {trade_type.upper()} Analysis ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                f"- Short-Term:\n"
-                f"  - Entry: ${analysis.get('entry_price', 'Not specified')}\n"
-                f"  - Exit: ${analysis.get('exit_price', 'Not specified')}\n"
-                f"  - Stop Loss: ${analysis.get('stop_loss', 'Not specified')}\n"
-                f"  - Leverage: {analysis.get('leverage', 'Unknown')}\n"
-                f"- Trend: {analysis.get('trend', 'Neutral')}\n"
-                f"- Pump Probability: {analysis.get('pump_probability', 0)}%\n"
-                f"- Dump Probability: {analysis.get('dump_probability', 0)}%\n"
-                f"- Support Level: ${analysis.get('support_level', 'Not specified')}\n"
-                f"- Resistance Level: ${analysis.get('resistance_level', 'Not specified')}\n"
-                f"- Risk/Reward Ratio: {analysis.get('risk_reward_ratio', 0):.2f}\n"
-                f"- Fundamental Analysis: {analysis.get('fundamental_analysis', 'No data')}\n"
-                f"- Indicators:\n"
-                f"  - Volume Change: 60m: {volume_changes if isinstance(volume_changes, (int, float)) else 'Unknown'}%\n"
-                f"  - Bid/Ask Ratio: {bid_ask_ratio if isinstance(bid_ask_ratio, (int, float)) else 'Unknown'}\n"
-                f"  - RSI: 60m: {rsi_values if isinstance(rsi_values, (int, float)) else 'Unknown'}\n"
-                f"  - MACD: 60m: {macd_values if isinstance(macd_values, (int, float)) else 'Unknown'}\n"
-                f"- Indicator Explanations:\n{explain_indicators(indicators)}\n"
-                f"- DeepSeek Comment: {analysis.get('comment', 'No comment available.')}"
+                f" {symbol} {trade_type.upper()} Analizi ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
+                f"- Kısa Vadeli:\n"
+                f"  - Giriş: ${analysis.get('entry_price', 'Belirtilmemiş')}\n"
+                f"  - Çıkış: ${analysis.get('exit_price', 'Belirtilmemiş')}\n"
+                f"  - Stop Loss: ${analysis.get('stop_loss', 'Belirtilmemiş')}\n"
+                f"  - Kaldıraç: {analysis.get('leverage', 'Bilinmiyor')}\n"
+                f"- Trend: {analysis.get('trend', 'Nötr')}\n"
+                f"- Pump Olasılığı: {analysis.get('pump_probability', 0)}%\n"
+                f"- Dump Olasılığı: {analysis.get('dump_probability', 0)}%\n"
+                f"- Destek Seviyesi: ${analysis.get('support_level', 'Belirtilmemiş')}\n"
+                f"- Direnç Seviyesi: ${analysis.get('resistance_level', 'Belirtilmemiş')}\n"
+                f"- Risk/Ödül Oranı: {analysis.get('risk_reward_ratio', 0):.2f}\n"
+                f"- Temel Analiz: {analysis.get('fundamental_analysis', 'Veri yok')}\n"
+                f"- Göstergeler:\n"
+                f"  - Hacim Değişimi: 60m: {volume_changes if isinstance(volume_changes, (int, float)) else 'Bilinmiyor'}%\n"
+                f"  - Bid/Ask Oranı: {bid_ask_ratio if isinstance(bid_ask_ratio, (int, float)) else 'Bilinmiyor'}\n"
+                f"  - RSI: 60m: {rsi_values if isinstance(rsi_values, (int, float)) else 'Bilinmiyor'}\n"
+                f"  - MACD: 60m: {macd_values if isinstance(macd_values, (int, float)) else 'Bilinmiyor'}\n"
+                f"- Gösterge Açıklamaları:\n{explain_indicators(indicators)}\n"
+                f"- DeepSeek Yorumu: {analysis.get('comment', 'Yorum yok.')}"
             )
             return message
         except Exception as e:
-            logger.error(f"Error formatting results for {symbol}: {e}")
-            return f"Error formatting {symbol} analysis: {str(e)}"
+            logger.error(f"{symbol} için sonuçlar biçimlendirilirken hata: {e}")
+            return f"{symbol} analizi biçimlendirilirken hata: {str(e)}"
 
     async def process_coin(self, symbol, mexc, trade_type, chat_id, endpoint=None):
-        """Processes a single coin for analysis."""
-        logger.info(f"Processing {symbol} ({trade_type})")
+        """Tek bir coin için analiz yapar."""
+        logger.info(f"{symbol} ({trade_type}) işleniyor")
         try:
             data = await mexc.fetch_and_save_market_data(symbol, endpoint)
             if not data or not data.get('klines', {}).get('60m'):
-                logger.warning(f"No valid market data for {symbol} ({trade_type})")
-                await self.app.bot.send_message(chat_id=chat_id, text=f"No valid market data for {symbol}")
+                logger.warning(f"{symbol} ({trade_type}) için geçerli piyasa verisi yok")
+                await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için geçerli piyasa verisi yok")
                 return None
 
             data['indicators'] = calculate_indicators(
@@ -687,8 +684,8 @@ class TelegramBot:
                 data.get('order_book')
             )
             if not data['indicators']:
-                logger.warning(f"Failed to calculate indicators for {symbol} ({trade_type})")
-                await self.app.bot.send_message(chat_id=chat_id, text=f"Failed to calculate indicators for {symbol}")
+                logger.warning(f"{symbol} ({trade_type}) için gösterge hesaplanamadı")
+                await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için gösterge hesaplanamadı")
                 return None
 
             deepseek = DeepSeekClient()
@@ -697,27 +694,27 @@ class TelegramBot:
 
             message = self.format_results(data, trade_type, symbol)
             await self.app.bot.send_message(chat_id=chat_id, text=message)
-            logger.info(f"Analysis sent for {symbol} ({trade_type})")
+            logger.info(f"{symbol} ({trade_type}) için analiz gönderildi")
 
             self.storage.save_analysis({f'{symbol}_{trade_type}': data})
             return data
         except Exception as e:
-            logger.error(f"Error processing {symbol} ({trade_type}): {e}")
-            await self.app.bot.send_message(chat_id=chat_id, text=f"Error processing {symbol}: {str(e)}")
+            logger.error(f"{symbol} ({trade_type}) işlenirken hata: {e}")
+            await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} işlenirken hata: {str(e)}")
             return None
 
     async def analyze_coins(self, limit, trade_type, chat_id):
-        """Analyzes top coins."""
-        logger.info(f"Starting analyze_coins: limit={limit}, trade_type={trade_type}")
+        """Top coin'ler için analiz yapar."""
+        logger.info(f"analyze_coins başlatılıyor: limit={limit}, trade_type={trade_type}")
         mexc = MEXCClient()
         results = {'date': datetime.now().strftime('%Y-%m-%d'), f'top_{limit}_{trade_type}': []}
         coins = await mexc.get_top_coins(limit)
-        logger.info(f"Analyzing {len(coins)} coins: {coins[:5]}...")
+        logger.info(f"{len(coins)} coin analiz ediliyor: {coins[:5]}...")
 
         for symbol in coins:
             analysis_key = f"{symbol}_{trade_type}_{chat_id}"
             if analysis_key in self.active_analyses:
-                logger.info(f"Analysis for {symbol} already in progress, skipping")
+                logger.info(f"{symbol} için analiz zaten yapılıyor, atlanıyor")
                 continue
             self.active_analyses[analysis_key] = True
             coin_data = await self.process_coin(symbol, mexc, trade_type, chat_id)
@@ -729,16 +726,16 @@ class TelegramBot:
         return results
 
     async def analyze_top_100_from_endpoints(self, chat_id, trade_type):
-        """Analyzes top 100 coins from endpoints.json."""
-        logger.info(f"Analyzing top 100 {trade_type} from endpoints.json")
+        """GitHub'daki endpoints.json'dan top 100 coin için analiz yapar."""
+        logger.info(f"Top 100 {trade_type} analizi endpoints.json'dan yapılıyor")
         mexc = MEXCClient()
         results = {'date': datetime.now().strftime('%Y-%m-%d'), f'top_100_{trade_type}': []}
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(ENDPOINTS_JSON_URL) as response:
                     if response.status != 200:
-                        logger.error(f"Failed to fetch endpoints.json: {response.status}")
-                        await self.app.bot.send_message(chat_id=chat_id, text="Failed to fetch endpoints.json.")
+                        logger.error(f"endpoints.json alınamadı: {response.status}")
+                        await self.app.bot.send_message(chat_id=chat_id, text="endpoints.json alınamadı.")
                         return results
                     endpoints = await response.json()
             
@@ -747,7 +744,7 @@ class TelegramBot:
                 endpoint = entry['endpoint']
                 analysis_key = f"{symbol}_{trade_type}_{chat_id}"
                 if analysis_key in self.active_analyses:
-                    logger.info(f"Analysis for {symbol} already in progress, skipping")
+                    logger.info(f"{symbol} için analiz zaten yapılıyor, atlanıyor")
                     continue
                 self.active_analyses[analysis_key] = True
                 coin_data = await self.process_coin(symbol, mexc, trade_type, chat_id, endpoint)
@@ -758,28 +755,28 @@ class TelegramBot:
             await mexc.close()
             return results
         except Exception as e:
-            logger.error(f"Error during top 100 analysis: {e}")
-            await self.app.bot.send_message(chat_id=chat_id, text=f"Error during top 100 analysis: {str(e)}")
+            logger.error(f"Top 100 analizi sırasında hata: {e}")
+            await self.app.bot.send_message(chat_id=chat_id, text=f"Top 100 analizi sırasında hata: {str(e)}")
             return results
 
     async def webhook_handler(self, request):
-        """Handles webhook requests."""
-        logger.info("Webhook request received")
+        """Webhook isteklerini işler."""
+        logger.info("Webhook isteği alındı")
         try:
             raw_data = await request.json()
             update = Update.de_json(raw_data, self.app.bot)
             if not update:
-                logger.warning("Invalid webhook update")
-                return web.Response(text="ERROR: Invalid update", status=400)
+                logger.warning("Geçersiz webhook güncellemesi")
+                return web.Response(text="HATA: Geçersiz güncelleme", status=400)
             await self.app.process_update(update)
             return web.Response(text="OK")
         except Exception as e:
-            logger.error(f"Webhook error: {e}")
-            return web.Response(text=f"ERROR: {str(e)}", status=500)
+            logger.error(f"Webhook hatası: {e}")
+            return web.Response(text=f"HATA: {str(e)}", status=500)
 
     async def run(self):
-        """Starts the webhook server."""
-        logger.info("Starting webhook server")
+        """Webhook sunucusunu başlatır."""
+        logger.info("Webhook sunucusu başlatılıyor")
         await self.app.initialize()
         await self.app.start()
         self.web_app = web.Application()
@@ -787,22 +784,22 @@ class TelegramBot:
         webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
         try:
             await self.app.bot.set_webhook(url=webhook_url)
-            logger.info(f"Webhook set to {webhook_url}")
+            logger.info(f"Webhook {webhook_url} adresine ayarlandı")
         except Exception as e:
-            logger.error(f"Error setting webhook: {e}")
+            logger.error(f"Webhook ayarlanırken hata: {e}")
             raise
         runner = web.AppRunner(self.web_app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
         await site.start()
-        logger.info(f"Webhook server running on port {os.getenv('PORT', 8443)}")
+        logger.info(f"Webhook sunucusu {os.getenv('PORT', 8443)} portunda çalışıyor")
         await asyncio.Event().wait()
 
 def main():
-    logger.info("Starting main")
+    logger.info("Main başlatılıyor")
     bot = TelegramBot()
     asyncio.run(bot.run())
 
 if __name__ == "__main__":
-    logger.info("Script started")
+    logger.info("Script başlatıldı")
     main()
