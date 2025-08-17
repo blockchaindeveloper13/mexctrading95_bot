@@ -158,7 +158,7 @@ class DeepSeekClient:
             Grup konuşmalarındaki sorulara veya yorumlara yanıt ver. Yanıtın akıcı, profesyonel ve en az 500 karakter olsun. Sabit ifadelerden uzak dur, yaratıcı ol.
             """
             response = self.client.chat.completions.create(
-                model="deepseek-reasoner",  # Model deepseek-reason olarak güncellendi
+                model="deepseek-reason",  # Model deepseek-reason olarak güncellendi
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=5000,
                 stream=False
@@ -170,7 +170,7 @@ class DeepSeekClient:
                 analysis_text += " " * (500 - len(analysis_text))
             return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
         except Exception as e:
-            logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {e}")
+            logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {str(e)}")
             return {
                 'short_term': {
                     'entry_price': data['price'],
@@ -617,20 +617,28 @@ class TelegramBot:
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     deepseek.client.chat.completions.create,
-                    model="deepseek-reasoner",  # Model deepseek-reason olarak güncellendi
+                    model="deepseek-reason",
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=5000,
-                    stream=False
+                    stream=True  # Akış modu etkinleştirildi
                 ),
-                timeout=20
+                timeout=30  # Timeout 30 saniyeye çıkarıldı
             )
-            response_text = response.choices[0].message.content
+
+            response_text = ""
+            for chunk in response:
+                if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
+                    response_text += chunk.choices[0].delta.content
+                elif hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                    response_text += chunk.choices[0].delta.reasoning_content
+
             if len(response_text) < 500:
+                logger.warning(f"DeepSeek yanıtı 500 karakterden kısa: {len(response_text)} karakter")
                 response_text += " " * (500 - len(response_text))
-            await update.message.reply_text(response_text)
+            await update.message.reply_text(response_text[:5000])
         except Exception as e:
-            logger.error(f"Chat sırasında hata: {e}")
-            await update.message.reply_text(f"Hata: {str(e)}")
+            logger.error(f"Chat sırasında hata: {str(e)} - Full response: {e.response.text if hasattr(e, 'response') else 'No response'}")
+            await update.message.reply_text(f"Hata: DeepSeek yanıtında sorun oluştu: {str(e)}")
 
     async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Kaydedilen analizleri gösterir."""
