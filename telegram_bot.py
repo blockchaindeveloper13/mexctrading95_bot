@@ -111,7 +111,7 @@ class DeepSeekClient:
         self.client = Open
 
 AI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
-        self.storage = Storage()
+    self.storage = Storage()
 
     def analyze_coin(self, symbol, data, trade_type, chat_id):
         """Performs coin analysis using DeepSeek API."""
