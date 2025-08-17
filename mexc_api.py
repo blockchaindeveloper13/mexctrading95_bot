@@ -46,7 +46,11 @@ class MEXCClient:
     async def get_kline(self, symbol, timeframe, limit=100):
         logger.debug(f"Fetching {timeframe} kline for {symbol}")
         try:
+            if timeframe not in ['1m', '5m', '15m', '30m', '60m', '4h', '1d']:  # Desteklenen intervaller
+                logger.error(f"Invalid timeframe: {timeframe}")
+                raise ValueError(f"Invalid timeframe: {timeframe}")
             klines = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            logger.debug(f"Fetched {len(klines)} kline entries for {symbol} ({timeframe})")
             return klines
         except Exception as e:
             logger.error(f"Error fetching {timeframe} kline for {symbol}: {e}")
@@ -99,7 +103,7 @@ class MEXCClient:
                     'coin': symbol,
                     'price': price,
                     'volume': volume,
-                    'klines': {tf: klines[tf] for tf in timeframes},
+                    'klines': klines,
                     'order_book': order_book
                 })
                 logger.info(f"{symbol} için veri alındı: fiyat={price}, hacim={volume}, "
