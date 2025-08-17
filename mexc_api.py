@@ -26,63 +26,48 @@ class MEXCClient:
         self.data_file = os.getenv('MARKET_DATA_FILE', 'market_data.json')
         logger.debug(f"Data file set to: {self.data_file}")
 
-    async def fetch_and_save_market_data(self, symbols, timeframes=['60m', '4h']):
-        logger.debug(f"Fetching market data for symbols: {symbols}, timeframes: {timeframes}")
-        market_data = []
-        for symbol in symbols:
-            logger.debug(f"Processing symbol: {symbol}")
+   async def fetch_and_save_market_data():
+    async with MEXCClient() as client:
+        markets = await client.get_exchange_info()
+        logger.info(f"{len(markets['symbols'])} market yüklendi")
+        usdt_pairs = [m['symbol'] for m in markets['symbols'] if m['symbol'].endswith('USDT')]
+        logger.info(f"{len(usdt_pairs)} USDT çifti bulundu (ilk 5): {usdt_pairs[:5]}...")
+        
+        tickers = await client.get_tickers()
+        logger.info(f"{len(tickers)} ticker alındı")
+        
+        top_100 = sorted(tickers, key=lambda x: float(x['volume']), reverse=True)[:100]
+        top_100_symbols = [t['symbol'] for t in top_100]
+        logger.info(f"En iyi 100 coin alındı: {top_100_symbols}")
+        
+        data = {}
+        for symbol in top_100_symbols:
             try:
-                klines = {}
-                for tf in timeframes:
-                    logger.debug(f"Fetching OHLCV for {symbol} with timeframe {tf}")
-                    try:
-                        klines_data = await self.exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
-                        logger.debug(f"Raw OHLCV data for {symbol} ({tf}): {klines_data[:5]}")
-                        klines[tf] = klines_data
-                        await asyncio.sleep(0.2)  # Rate limit için
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch klines for {symbol} ({tf}): {e}")
-                        klines[tf] = []
+                ticker = next(t for t in tickers if t['symbol'] == symbol)
+                price = float(ticker['lastPrice'])
+                volume = float(ticker['volume'])
                 
-                logger.debug(f"Fetching ticker for {symbol}")
-                ticker = await self.exchange.fetch_ticker(symbol)
-                logger.debug(f"Ticker data for {symbol}: {ticker}")
+                # '60m' yerine '1h' kullan
+                klines_1h = await client.get_kline(symbol, '1h', limit=100)
+                klines_4h = await client.get_kline(symbol, '4h', limit=100)
+                order_book = await client.get_order_book(symbol, limit=10)
                 
-                logger.debug(f"Fetching order book for {symbol}")
-                order_book = await self.exchange.fetch_order_book(symbol, limit=10)
-                logger.debug(f"Order book data for {symbol}: bids={len(order_book.get('bids', []))}, asks={len(order_book.get('asks', []))}")
-                
-                data = {
-                    'coin': symbol,
-                    'price': ticker.get('last', 0),
-                    'volume': ticker.get('quoteVolume', 0),
-                    'klines': klines,
-                    'order_book': order_book,
-                    'timestamp': datetime.utcnow().isoformat()
+                data[symbol] = {
+                    'price': price,
+                    'volume': volume,
+                    'klines_1h': len(klines_1h),
+                    'klines_4h': len(klines_4h),
+                    'order_book_bids': len(order_book['bids'])
                 }
-                logger.debug(f"Constructed data for {symbol}: {data}")
-                market_data.append(data)
-                
-                log_msg = f"Fetched market data for {symbol}: price={data['price']}, volume={data['volume']}"
-                for tf in timeframes:
-                    log_msg += f", klines_{tf}={len(klines.get(tf, []))}"
-                log_msg += f", order_book_bids={len(order_book.get('bids', []))}"
-                logger.info(log_msg)
-                
+                logger.info(f"{symbol} için veri alındı: fiyat={price}, hacim={volume}, klines_1h={len(klines_1h)}, klines_4h={len(klines_4h)}, order_book_bids={len(order_book['bids'])}")
             except Exception as e:
-                logger.error(f"Error fetching market data for {symbol}: {e}")
-                continue
+                logger.warning(f"{symbol} için veri alınırken hata: {str(e)}")
         
-        try:
-            logger.debug(f"Saving market data to {self.data_file}: {len(market_data)} coins")
-            with open(self.data_file, 'w') as f:
-                json.dump(market_data, f, indent=2)
-            logger.info(f"Saved {len(market_data)} coins to {self.data_file}")
-        except Exception as e:
-            logger.error(f"Error saving market data to {self.data_file}: {e}")
+        with open('/tmp/market_data.json', 'w') as f:
+            json.dump(data, f)
+        logger.info(f"{len(data)} coin market_data.json'a kaydedildi")
         
-        logger.debug(f"Returning market data: {len(market_data)} coins")
-        return market_data
+        return data
 
     async def get_top_coins(self, limit=10, timeframes=['60m', '4h']):
         logger.debug(f"Fetching top {limit} coins with timeframes: {timeframes}")
