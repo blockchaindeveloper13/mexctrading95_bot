@@ -13,18 +13,18 @@ class Storage:
             if not data or not any(data.get(key, []) for key in data if key.startswith('top_')):
                 logger.warning("No valid data to save in analysis.json")
                 return
-            with open('analysis.json', 'w') as f:
+            with open('/tmp/analysis.json', 'w') as f:  # Heroku için /tmp
                 json.dump(data, f, indent=4)
-            logger.info("Analysis saved to analysis.json")
+            logger.info("Analysis saved to /tmp/analysis.json")
         except Exception as e:
             logger.error(f"Error saving analysis: {e}")
 
     def load_analysis(self):
-        logger.debug("Loading analysis from analysis.json")
+        logger.debug("Loading analysis from /tmp/analysis.json")
         try:
-            with open('analysis.json', 'r') as f:
+            with open('/tmp/analysis.json', 'r') as f:
                 data = json.load(f)
-            logger.info("Analysis loaded from analysis.json")
+            logger.info("Analysis loaded from /tmp/analysis.json")
             logger.debug(f"Loaded analysis data: {data}")
             return data
         except FileNotFoundError:
