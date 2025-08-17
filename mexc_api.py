@@ -22,19 +22,29 @@ class MEXCClient:
             # Market verilerini çek
             markets = await self.exchange.load_markets()
             logger.info(f"Loaded {len(markets)} markets")
+            
+            # Tüm market sembollerini ve durumlarını logla
+            all_symbols = list(markets.keys())
+            logger.debug(f"All market symbols (first 10): {all_symbols[:10]}")
+            
+            # USDT çiftlerini filtrele
+            usdt_pairs = [symbol for symbol in markets if symbol.endswith('/USDT')]
+            logger.info(f"Found {len(usdt_pairs)} USDT pairs (first 5): {usdt_pairs[:5]}...")
+            
+            # Aktiflik kontrolü
+            active_usdt_pairs = [
+                symbol for symbol in usdt_pairs
+                if markets[symbol].get('active', True)  # Varsayılan olarak aktif kabul et
+            ]
+            logger.info(f"Found {len(active_usdt_pairs)} active USDT pairs (first 5): {active_usdt_pairs[:5]}...")
+            
+            # Ticker verilerini çek
             tickers = await self.exchange.fetch_tickers()
             logger.info(f"Fetched {len(tickers)} tickers")
             
-            # USDT çiftlerini filtrele
-            usdt_pairs = [
-                symbol for symbol, market in markets.items()
-                if symbol.endswith('/USDT') and market.get('active', False)
-            ]
-            logger.info(f"Found {len(usdt_pairs)} USDT pairs: {usdt_pairs[:5]}...")
-            
             # Hacme göre sırala
             sorted_tickers = sorted(
-                [(symbol, tickers[symbol].get('quoteVolume', 0)) for symbol in usdt_pairs if symbol in tickers],
+                [(symbol, tickers[symbol].get('quoteVolume', 0)) for symbol in active_usdt_pairs if symbol in tickers],
                 key=lambda x: x[1],
                 reverse=True
             )
