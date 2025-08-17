@@ -19,28 +19,51 @@ class MEXCClient:
             'enableRateLimit': True
         })
         self.data_file = os.getenv('MARKET_DATA_FILE', 'market_data.json')
+        self.supported_timeframes = {
+            '1m': '1 minute',
+            '5m': '5 minutes',
+            '15m': '15 minutes',
+            '30m': '30 minutes',
+            '60m': '1 hour',
+            '4h': '4 hours',
+            '1d': '1 day',
+            '1M': '1 month'
+        }
 
-    async def fetch_and_save_market_data(self, symbols):
+    async def fetch_and_save_market_data(self, symbols, timeframes=['60m', '4h']):
         """MEXC'ten veri çek ve market_data.json'a kaydet"""
         market_data = []
         for symbol in symbols:
             try:
-                # MEXC API için desteklenen zaman dilimleri: 60m ve 4h
-                klines_1h = await self.exchange.fetch_ohlcv(symbol, timeframe='60m', limit=100)
-                klines_4h = await self.exchange.fetch_ohlcv(symbol, timeframe='4h', limit=100)
+                # Desteklenen zaman dilimleri için veri çek
+                klines = {}
+                for tf in timeframes:
+                    if tf in self.supported_timeframes:
+                        klines[tf] = await self.exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
+                    else:
+                        logger.warning(f"Unsupported timeframe {tf} for symbol {symbol}")
+                        klines[tf] = []
+                
                 ticker = await self.exchange.fetch_ticker(symbol)
                 order_book = await self.exchange.fetch_order_book(symbol, limit=10)
+                
                 data = {
                     'coin': symbol,
                     'price': ticker.get('last', 0),
                     'volume': ticker.get('quoteVolume', 0),
-                    'klines_1h': klines_1h,
-                    'klines_4h': klines_4h,
+                    'klines': klines,
                     'order_book': order_book,
                     'timestamp': datetime.utcnow().isoformat()
                 }
                 market_data.append(data)
-                logger.info(f"Fetched market data for {symbol}: price={data['price']}, volume={data['volume']}, klines_1h={len(klines_1h)}, klines_4h={len(klines_4h)}, order_book_bids={len(order_book.get('bids', []))}")
+                
+                # Log bilgilerini daha detaylı hale getirdim
+                log_msg = f"Fetched market data for {symbol}: price={data['price']}, volume={data['volume']}"
+                for tf in timeframes:
+                    log_msg += f", klines_{tf}={len(klines.get(tf, []))}"
+                log_msg += f", order_book_bids={len(order_book.get('bids', []))}"
+                logger.info(log_msg)
+                
             except Exception as e:
                 logger.error(f"Error fetching market data for {symbol}: {e}")
                 continue
@@ -55,17 +78,11 @@ class MEXCClient:
         
         return market_data
 
-    async def get_top_coins(self, limit):
+    async def get_top_coins(self, limit=10, timeframes=['60m', '4h']):
         try:
             # Market verilerini çek
             markets = await self.exchange.load_markets()
             logger.info(f"Loaded {len(markets)} markets")
-            
-            # Tüm market sembollerini ve örnek market yapısını logla
-            all_symbols = list(markets.keys())
-            logger.debug(f"All market symbols (first 10): {all_symbols[:10]}")
-            if all_symbols:
-                logger.debug(f"Sample market data for {all_symbols[0]}: {markets[all_symbols[0]]}")
             
             # USDT çiftlerini filtrele
             usdt_pairs = [symbol for symbol in markets if symbol.endswith('/USDT')]
@@ -82,36 +99,43 @@ class MEXCClient:
                 reverse=True
             )
             coins = [symbol for symbol, _ in sorted_tickers[:limit]]
-            logger.info(f"Fetched {len(coins)} top coins: {coins[:5]}...")
+            logger.info(f"Fetched {len(coins)} top coins: {coins}")
+            
             if not coins:
                 logger.warning("No valid USDT pairs found in tickers")
                 return []
             
             # Seçilen coinler için market verilerini çek ve kaydet
-            await self.fetch_and_save_market_data(coins)
+            await self.fetch_and_save_market_data(coins, timeframes)
             return coins
         except Exception as e:
             logger.error(f"Error fetching top coins: {e}")
             return []
 
-    async def get_market_data(self, symbol):
+    async def get_market_data(self, symbol, timeframes=['60m', '4h']):
         try:
             # JSON dosyasından verileri oku
             with open(self.data_file, 'r') as f:
                 market_data = json.load(f)
             
-            # İlgili coin’in verisini bul
+            # İlgili coin'in verisini bul
             for item in market_data:
                 if item['coin'] == symbol:
                     data = {
                         'coin': symbol,
                         'price': item.get('price', 0),
                         'volume': item.get('volume', 0),
-                        'klines_1h': item.get('klines_1h', []),
-                        'klines_4h': item.get('klines_4h', []),
+                        'klines': {tf: item['klines'].get(tf, []) for tf in timeframes},
                         'order_book': item.get('order_book', {'bids': [], 'asks': []})
                     }
-                    logger.info(f"Fetched market data for {symbol} from JSON: price={data['price']}, volume={data['volume']}, klines_1h={len(data['klines_1h'])}, klines_4h={len(data['klines_4h'])}, order_book_bids={len(data['order_book'].get('bids', []))}")
+                    
+                    # Log bilgilerini güncelledim
+                    log_msg = f"Fetched market data for {symbol} from JSON: price={data['price']}, volume={data['volume']}"
+                    for tf in timeframes:
+                        log_msg += f", klines_{tf}={len(data['klines'].get(tf, []))}"
+                    log_msg += f", order_book_bids={len(data['order_book'].get('bids', []))}"
+                    logger.info(log_msg)
+                    
                     return data
             logger.warning(f"No data found for {symbol} in {self.data_file}")
             return None
