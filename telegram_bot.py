@@ -1,7 +1,7 @@
 import os
 import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 from openai import OpenAI
 from aiohttp import web
@@ -27,7 +27,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CallbackQueryHandler(self.button))
         self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
-        self.app.add_handler(MessageHandler(Filters.text & ~Filters.command, self.chat))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Start command received")
