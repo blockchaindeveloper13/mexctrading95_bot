@@ -47,30 +47,40 @@ class MEXCClient:
             logger.error(f"Error fetching tickers: {e}")
             return []
 
-    async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
-        logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries})")
-        try:
-            if not isinstance(timeframe, str) or timeframe not in ['1m', '5m', '15m', '30m', '60m']:
-                logger.error(f"Invalid or None timeframe for {symbol}: {timeframe}")
-                raise ValueError(f"Invalid or None timeframe: {timeframe}")
-            for attempt in range(retries):
-                try:
-                    klines = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-                    if klines:
-                        logger.debug(f"Fetched {len(klines)} kline entries for {symbol} ({timeframe})")
-                        return klines
-                    logger.warning(f"No kline data for {symbol} ({timeframe}) on attempt {attempt + 1}")
-                    await asyncio.sleep(delay * (attempt + 1))
-                except Exception as e:
-                    logger.warning(f"Attempt {attempt + 1} failed for {symbol} ({timeframe}): {e}")
-                    if attempt == retries - 1:
-                        logger.error(f"Failed to fetch {timeframe} kline for {symbol} after {retries} attempts")
-                        return []
-                    await asyncio.sleep(delay * (attempt + 1))
-            return []
-        except Exception as e:
-            logger.error(f"Error fetching {timeframe} kline for {symbol}: {e}")
-            return []
+ async def get_kline(self, symbol, timeframe, limit=100, retries=3, delay=2):
+    logger.debug(f"Fetching {timeframe} kline for {symbol} (retries: {retries})")
+    try:
+        # CCXT için zaman aralığı dönüşümü
+        tf_mapping = {
+            '1m': '1m',
+            '5m': '5m',
+            '15m': '15m',
+            '30m': '30m',
+            '60m': '1h'  # MEXC API'si 60m yerine 1h kullanıyor
+        }
+        ccxt_timeframe = tf_mapping.get(timeframe)
+        if not ccxt_timeframe:
+            logger.error(f"Invalid timeframe for {symbol}: {timeframe}")
+            raise ValueError(f"Invalid timeframe: {timeframe}")
+
+        for attempt in range(retries):
+            try:
+                klines = await self.exchange.fetch_ohlcv(symbol, ccxt_timeframe, limit=limit)
+                if klines:
+                    logger.debug(f"Fetched {len(klines)} kline entries for {symbol} ({timeframe})")
+                    return klines
+                logger.warning(f"No kline data for {symbol} ({timeframe}) on attempt {attempt + 1}")
+                await asyncio.sleep(delay * (attempt + 1))
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed for {symbol} ({timeframe}): {e}")
+                if attempt == retries - 1:
+                    logger.error(f"Failed to fetch {timeframe} kline for {symbol} after {retries} attempts")
+                    return []
+                await asyncio.sleep(delay * (attempt + 1))
+        return []
+    except Exception as e:
+        logger.error(f"Error fetching {timeframe} kline for {symbol}: {e}")
+        return []
 
     async def get_order_book(self, symbol, limit=10):
         logger.debug(f"Fetching order book for {symbol}")
