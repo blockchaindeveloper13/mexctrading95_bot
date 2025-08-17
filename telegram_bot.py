@@ -130,7 +130,7 @@ class DeepSeekClient:
             context_str = "\n".join([f"[{c['timestamp']}] {c['message']}" for c in group_context])
 
             prompt = f"""
-            {symbol} için {trade_type} işlem stratejisi analizi yap. Yanıt tamamen Türkçe olmalı. Aşağıdaki piyasa verilerini ve teknik göstergeleri kullanarak özgün, detaylı ve bağlama uygun bir analiz üret:
+            {symbol} için {trade_type} işlem stratejisi analizi yap. Yanıt tamamen Türkçe olmalı ve minimum 500 karakter, maksimum 5000 karakter uzunluğunda olsun. Aşağıdaki piyasa verilerini ve teknik göstergeleri kullanarak özgün, detaylı ve bağlama uygun bir analiz üret:
 
             - Mevcut Fiyat: {data['price']} USDT
             - Hacim Değişimleri: 
@@ -145,7 +145,7 @@ class DeepSeekClient:
             {context_str if context_str else 'Grup konuşma geçmişi yok.'}
 
             Analizinde şu bilgileri dahil et, ancak format ve üslup tamamen sana bağlı:
-            - Önerilen giriş, çıkış ve stop-loss fiyatları (USDT cinsinden).
+            - Önerilen giriş, çıkış ve stop-loss fiyatları (USDT cinsinden, yalnızca senin belirlediğin değerler kullanılacak).
             - Kaldıraç önerisi (örneğin, spot için 1x, vadeli için uygun bir seviye).
             - Pump ve dump olasılıkları (% cinsinden, göstergelere dayalı).
             - Trend tahmini (yükseliş, düşüş veya nötr).
@@ -154,7 +154,7 @@ class DeepSeekClient:
             - Piyasa duyarlılığı, hacim trendleri ve alım/satım baskısını içeren temel analiz.
             - Özgün bir yorum (Al/Sat/Bekle önerisi ve gerekçeleri, sabit ifadelerden kaçın).
 
-            Grup konuşmalarını dikkate alarak analizi kişiselleştir. Yanıtın doğal, akıcı ve profesyonel olsun. Sabit veya tekrarlayan ifadelerden kaçın, yaratıcı ol.
+            Grup konuşmalarını dikkate alarak analizi kişiselleştir. Yanıtın doğal, akıcı ve profesyonel olsun. Sabit veya tekrarlayan ifadelerden kaçın, yaratıcı ol. Yorumun minimum 500 karakter olsun.
             """
             response = self.client.chat.completions.create(
                 model="deepseek-moe",
@@ -163,20 +163,23 @@ class DeepSeekClient:
             )
             analysis_text = response.choices[0].message.content
             logger.info(f"DeepSeek ham yanıtı ({symbol}): {analysis_text}")
+            if len(analysis_text) < 500:
+                logger.warning(f"DeepSeek yanıtı ({symbol}) 500 karakterden kısa: {len(analysis_text)} karakter")
+                analysis_text += " " * (500 - len(analysis_text))  # Minimum 500 karakteri garantile
             return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
         except Exception as e:
             logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {e}")
             return {
                 'short_term': {
-                    'entry_price': data['price'],
-                    'exit_price': data['price'] * 1.02,
-                    'stop_loss': data['price'] * 0.98,
+                    'entry_price': None,
+                    'exit_price': None,
+                    'stop_loss': None,
                     'leverage': '1x' if trade_type == 'spot' else '3x',
                     'pump_probability': 50,
                     'dump_probability': 50,
                     'trend': 'Nötr',
-                    'support_level': data['price'] * 0.95,
-                    'resistance_level': data['price'] * 1.05,
+                    'support_level': None,
+                    'resistance_level': None,
                     'risk_reward_ratio': 1.0,
                     'fundamental_analysis': 'Analiz başarısız: Veri yetersiz.',
                     'comment': self.generate_dynamic_default_comment(data)
@@ -187,15 +190,15 @@ class DeepSeekClient:
         """DeepSeek yanıtını esnek bir şekilde parse eder."""
         try:
             result = {
-                'entry_price': current_price,
-                'exit_price': current_price * 1.02,
-                'stop_loss': current_price * 0.98,
+                'entry_price': None,
+                'exit_price': None,
+                'stop_loss': None,
                 'leverage': '1x',
                 'pump_probability': 50,
                 'dump_probability': 50,
                 'trend': 'Nötr',
-                'support_level': current_price * 0.95,
-                'resistance_level': current_price * 1.05,
+                'support_level': None,
+                'resistance_level': None,
                 'risk_reward_ratio': 1.0,
                 'fundamental_analysis': text[:500] if text else 'Analiz başarısız',
                 'comment': text[:500] if text else 'Analiz başarısız: Veri yetersiz.'
@@ -205,25 +208,33 @@ class DeepSeekClient:
             for line in lines:
                 line = line.strip().lower()
                 if 'giriş fiyatı' in line:
-                    result['entry_price'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price
+                    match = re.search(r'\d+\.?\d*', line)
+                    result['entry_price'] = float(match.group(0)) if match else None
                 elif 'çıkış fiyatı' in line:
-                    result['exit_price'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price * 1.02
+                    match = re.search(r'\d+\.?\d*', line)
+                    result['exit_price'] = float(match.group(0)) if match else None
                 elif 'stop loss' in line:
-                    result['stop_loss'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price * 0.98
+                    match = re.search(r'\d+\.?\d*', line)
+                    result['stop_loss'] = float(match.group(0)) if match else None
                 elif 'kaldıraç' in line:
                     result['leverage'] = line.split(':')[1].strip() if ':' in line else '1x'
                 elif 'pump olasılığı' in line:
-                    result['pump_probability'] = int(re.search(r'\d+', line).group(0)) if re.search(r'\d+', line) else 50
+                    match = re.search(r'\d+', line)
+                    result['pump_probability'] = int(match.group(0)) if match else 50
                 elif 'dump olasılığı' in line:
-                    result['dump_probability'] = int(re.search(r'\d+', line).group(0)) if re.search(r'\d+', line) else 50
+                    match = re.search(r'\d+', line)
+                    result['dump_probability'] = int(match.group(0)) if match else 50
                 elif 'trend' in line:
                     result['trend'] = line.split(':')[1].strip() if ':' in line else 'Nötr'
                 elif 'destek seviyesi' in line:
-                    result['support_level'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price * 0.95
+                    match = re.search(r'\d+\.?\d*', line)
+                    result['support_level'] = float(match.group(0)) if match else None
                 elif 'direnç seviyesi' in line:
-                    result['resistance_level'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else current_price * 1.05
+                    match = re.search(r'\d+\.?\d*', line)
+                    result['resistance_level'] = float(match.group(0)) if match else None
                 elif 'risk/ödül oranı' in line:
-                    result['risk_reward_ratio'] = float(re.search(r'\d+\.?\d*', line).group(0)) if re.search(r'\d+\.?\d*', line) else 1.0
+                    match = re.search(r'\d+\.?\d*', line)
+                    result['risk_reward_ratio'] = float(match.group(0)) if match else 1.0
                 elif 'temel analiz' in line:
                     result['fundamental_analysis'] = line.split(':')[1].strip()[:500] if ':' in line else text[:500]
                 elif 'yorum' in line:
@@ -236,15 +247,15 @@ class DeepSeekClient:
         except Exception as e:
             logger.error(f"DeepSeek yanıtı parse edilirken hata: {e}")
             return {
-                'entry_price': current_price,
-                'exit_price': current_price * 1.02,
-                'stop_loss': current_price * 0.98,
+                'entry_price': None,
+                'exit_price': None,
+                'stop_loss': None,
                 'leverage': '1x',
                 'pump_probability': 50,
                 'dump_probability': 50,
                 'trend': 'Nötr',
-                'support_level': current_price * 0.95,
-                'resistance_level': current_price * 1.05,
+                'support_level': None,
+                'resistance_level': None,
                 'risk_reward_ratio': 1.0,
                 'fundamental_analysis': 'Analiz başarısız',
                 'comment': self.generate_dynamic_default_comment({'price': current_price})
@@ -258,33 +269,35 @@ class DeepSeekClient:
         macd_60m = indicators.get('macd_60m', 0.0)
         bid_ask_ratio = indicators.get('bid_ask_ratio', 0.0)
 
-        comment = "Analiz: "
+        comment = "Analiz: Piyasa şu an net bir yön göstermiyor. "
         if rsi_60m > 70:
-            comment += "RSI aşırı alım bölgesinde, düşüş riski yüksek. "
+            comment += "RSI aşırı alım bölgesinde, fiyatlarda düzeltme riski mevcut. "
         elif rsi_60m < 30:
-            comment += "RSI aşırı satım bölgesinde, alım fırsatı olabilir. "
+            comment += "RSI aşırı satım bölgesinde, potansiyel bir alım fırsatı olabilir. "
         else:
-            comment += "RSI nötr, yön belirsiz. "
+            comment += f"RSI {rsi_60m:.2f} ile nötr, belirgin bir trend sinyali yok. "
 
         if volume_change_60m > 100:
-            comment += "Hacimde güçlü artış, hareketlilik bekleniyor. "
+            comment += "Hacimde güçlü bir artış var, bu da piyasada hareketlilik yaratabilir. "
         elif volume_change_60m < -50:
-            comment += "Hacimde ciddi düşüş, piyasa durgun. "
+            comment += "Hacimde ciddi bir düşüş gözleniyor, piyasa oldukça durgun. "
         else:
-            comment += f"Hacimde %{volume_change_60m:.2f} değişim, dikkatli takip gerekli. "
+            comment += f"Hacimde %{volume_change_60m:.2f} değişim var, dikkatli takip önerilir. "
 
         if macd_60m > 0:
-            comment += "MACD yükseliş sinyali veriyor. "
+            comment += "MACD pozitif, kısa vadeli yükseliş eğilimi mevcut. "
         elif macd_60m < 0:
-            comment += "MACD düşüş sinyali veriyor. "
+            comment += "MACD negatif, düşüş eğilimi sinyali veriyor. "
 
         if bid_ask_ratio > 1.5:
-            comment += "Güçlü alım baskısı var."
+            comment += "Bid/ask oranı güçlü alım baskısını işaret ediyor."
         elif bid_ask_ratio < 0.7:
-            comment += "Satış baskısı hakim."
+            comment += "Bid/ask oranı satış baskısının hakim olduğunu gösteriyor."
         else:
-            comment += "Alım/satım dengeli."
+            comment += "Bid/ask oranı dengeli, alım ve satım baskıları eşit."
 
+        if len(comment) < 500:
+            comment += " " * (500 - len(comment))  # Minimum 500 karakter
         return comment[:500]
 
 class Storage:
@@ -632,15 +645,15 @@ class TelegramBot:
             message = (
                 f" {symbol} {trade_type.upper()} Analizi ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
                 f"- Kısa Vadeli:\n"
-                f"  - Giriş: ${analysis.get('entry_price', 0):.2f}\n"
-                f"  - Çıkış: ${analysis.get('exit_price', 0):.2f}\n"
-                f"  - Stop Loss: ${analysis.get('stop_loss', 0):.2f}\n"
+                f"  - Giriş: ${analysis.get('entry_price', 'Belirtilmemiş')}\n"
+                f"  - Çıkış: ${analysis.get('exit_price', 'Belirtilmemiş')}\n"
+                f"  - Stop Loss: ${analysis.get('stop_loss', 'Belirtilmemiş')}\n"
                 f"  - Kaldıraç: {analysis.get('leverage', 'Yok')}\n"
                 f"- Trend: {analysis.get('trend', 'Nötr')}\n"
                 f"- Pump Olasılığı: {analysis.get('pump_probability', 0)}%\n"
                 f"- Dump Olasılığı: {analysis.get('dump_probability', 0)}%\n"
-                f"- Destek Seviyesi: ${analysis.get('support_level', 0):.2f}\n"
-                f"- Direnç Seviyesi: ${analysis.get('resistance_level', 0):.2f}\n"
+                f"- Destek Seviyesi: ${analysis.get('support_level', 'Belirtilmemiş')}\n"
+                f"- Direnç Seviyesi: ${analysis.get('resistance_level', 'Belirtilmemiş')}\n"
                 f"- Risk/Ödül Oranı: {analysis.get('risk_reward_ratio', 0):.2f}\n"
                 f"- Temel Analiz: {analysis.get('fundamental_analysis', 'Veri yok')}\n"
                 f"- Göstergeler:\n"
