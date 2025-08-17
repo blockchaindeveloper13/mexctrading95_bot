@@ -18,12 +18,21 @@ class MEXCClient:
             'secret': os.getenv('MEXC_API_SECRET'),
             'enableRateLimit': True,
             'options': {
-                'defaultTimeframe': '1h',  # Varsayılan zaman dilimini 1h yap (bu kalabilir, ancak zorunlu değil)
+                'defaultTimeframe': '60m',  # Düzeltildi: 1h -> 60m
+                'timeframes': {
+                    '1m': '1m',
+                    '5m': '5m',
+                    '15m': '15m',
+                    '30m': '30m',
+                    '1h': '60m',  # Düzeltildi: 1h -> 60m
+                    '4h': '4h',
+                    '1d': '1d',
+                }
             }
         })
         self.data_file = os.getenv('MARKET_DATA_FILE', 'market_data.json')
 
-    async def fetch_and_save_market_data(self, symbols, timeframes=['1h', '4h']):  # 60m yerine 1h
+    async def fetch_and_save_market_data(self, symbols, timeframes=['60m', '4h']):  # Düzeltildi: 1h -> 60m
         market_data = []
         for symbol in symbols:
             try:
@@ -67,7 +76,7 @@ class MEXCClient:
         
         return market_data
 
-    async def get_top_coins(self, limit=10, timeframes=['1h', '4h']):  # 60m yerine 1h
+    async def get_top_coins(self, limit=10, timeframes=['60m', '4h']):  # Düzeltildi: 1h -> 60m
         try:
             markets = await self.exchange.load_markets()
             logger.info(f"Loaded {len(markets)} markets")
@@ -96,7 +105,7 @@ class MEXCClient:
             logger.error(f"Error fetching top coins: {e}")
             return []
 
-    async def get_market_data(self, symbol, timeframes=['1h', '4h']):  # 60m yerine 1h
+    async def get_market_data(self, symbol, timeframes=['60m', '4h']):  # Düzeltildi: 1h -> 60m
         try:
             with open(self.data_file, 'r') as f:
                 market_data = json.load(f)
