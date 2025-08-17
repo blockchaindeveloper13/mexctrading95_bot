@@ -13,14 +13,17 @@ from dotenv import load_dotenv
 from datetime import datetime
 import re
 
+# Eksik sınıfları ve fonksiyonları içe aktar
+from mexc_client import MEXCClient  # MEXCClient sınıfını içe aktar
+from deepseek_client import DeepSeekClient  # DeepSeekClient sınıfını içe aktar
+from storage import Storage  # Storage sınıfını içe aktar
+from indicators import calculate_indicators  # calculate_indicators fonksiyonunu içe aktar
+
 # Loglama ayarları
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-
-# MEXCClient, DeepSeekClient, Storage, calculate_indicators sınıfları/kodları aynı kalıyor
-# Bu sınıfların/kodların doğru çalıştığı varsayılıyor
 
 class TelegramBot:
     def __init__(self):
