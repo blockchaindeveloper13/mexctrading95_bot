@@ -7,6 +7,7 @@ from openai import OpenAI
 from aiohttp import web
 import asyncio
 import logging
+from datetime import datetime
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -15,8 +16,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 class TelegramBot:
-    def __init__(self, analyze_callback):
-        self.analyze_callback = analyze_callback
+    def __init__(self):
         self.group_id = os.getenv('TELEGRAM_GROUP_ID')
         self.client = OpenAI(
             api_key=os.getenv('DEEPSEEK_API_KEY'),
@@ -44,7 +44,7 @@ class TelegramBot:
         await query.answer()
         logger.info(f"Button clicked: {query.data}")
         limit = 100 if query.data == 'top_100' else 300
-        results = self.analyze_callback(limit)
+        results = await self.analyze_coins(limit)
         message = self.format_results(results)
         await context.bot.send_message(chat_id=self.group_id, text=message)
 
@@ -83,6 +83,29 @@ class TelegramBot:
                     message += f"- DeepSeek: {json.dumps(coin['deepseek_analysis']['short_term'])}\n"
         return message
 
+    async def analyze_coins(self, limit):
+        from mexc_api import MEXCClient
+        from indicators import calculate_indicators
+        from deepseek import DeepSeekClient
+        from storage import Storage
+
+        mexc = MEXCClient()
+        deepseek = DeepSeekClient()
+        storage = Storage()
+        
+        coins = mexc.get_top_coins(limit)
+        results = {'date': datetime.now().strftime('%Y-%m-%d'), 'top_100': [], 'top_300': []}
+        
+        for symbol in coins:
+            data = mexc.get_market_data(symbol)
+            if data:
+                data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'])
+                data['deepseek_analysis'] = deepseek.analyze_coin(data)
+                results['top_100' if limit == 100 else 'top_300'].append(data)
+        
+        storage.save_analysis(results)
+        return results
+
     async def webhook_handler(self, request):
         logger.info("Webhook request received")
         try:
@@ -113,11 +136,14 @@ class TelegramBot:
         await asyncio.Event().wait()
 
 def main():
-    from mexc_api import MEXCClient
-    from indicators import calculate_indicators
-    from deepseek import DeepSeekClient
-    bot = TelegramBot(lambda limit: analyze_coins(limit))
+    bot = TelegramBot()
     asyncio.run(bot.run())
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "analyze_coins":
+        limit = 100 if len(sys.argv) < 3 else int(sys.argv[2])
+        bot = TelegramBot()
+        asyncio.run(bot.analyze_coins(limit))
+    else:
+        main()
