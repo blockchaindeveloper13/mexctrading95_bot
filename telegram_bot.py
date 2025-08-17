@@ -19,40 +19,48 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# MEXCClient, DeepSeekClient, Storage, calculate_indicators aynı kalıyor
-# (Paylaştığınız kodun bu kısımları zaten doğru ve çalışır durumda)
+# MEXCClient, DeepSeekClient, Storage, calculate_indicators sınıfları/kodları aynı kalıyor
+# Bu sınıfların/kodların doğru çalıştığı varsayılıyor
 
 class TelegramBot:
     def __init__(self):
-        logger.debug("Initializing TelegramBot")
+        """Telegram botunu başlatır ve gerekli ayarları yapar."""
+        logger.debug("TelegramBot başlatılıyor")
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
         self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not bot_token:
-            logger.error("TELEGRAM_BOT_TOKEN is not set")
-            raise ValueError("TELEGRAM_BOT_TOKEN environment variable is missing")
+            logger.error("TELEGRAM_BOT_TOKEN ortam değişkeni eksik")
+            raise ValueError("TELEGRAM_BOT_TOKEN ortam değişkeni eksik")
         
         try:
+            # Telegram Application oluştur
             self.app = Application.builder().token(bot_token).build()
-            logger.debug("Application initialized successfully")
+            logger.debug("Application başarıyla başlatıldı")
+            
+            # Komut ve callback handler'ları ekle
             self.app.add_handler(CommandHandler("start", self.start))
             self.app.add_handler(CallbackQueryHandler(self.button))
             self.app.add_handler(CommandHandler("show_analysis", self.show_analysis))
             self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
             self.web_app = None
-            # Job queue başlatma
-            try:
-                self.app.job_queue.start()
-                logger.debug("Job queue started successfully")
-            except Exception as e:
-                logger.warning(f"Failed to start job_queue: {e}. Proceeding without job_queue.")
-                self.app.job_queue = None  # Job queue başlatılamazsa None olarak bırak
+            
+            # Job queue kontrolü
+            if self.app.job_queue is not None:
+                try:
+                    self.app.job_queue.start()
+                    logger.debug("Job queue başarıyla başlatıldı")
+                except Exception as e:
+                    logger.warning(f"Job queue başlatılamadı: {e}. Job queue olmadan devam ediliyor.")
+            else:
+                logger.warning("Job queue mevcut değil. Job queue olmadan devam ediliyor.")
         except Exception as e:
-            logger.error(f"Error initializing Application: {e}")
+            logger.error(f"Application başlatılırken hata: {e}")
             raise
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.debug(f"Start command from chat_id={update.effective_chat.id}")
+        """ /start komutu için menü oluşturur. """
+        logger.debug(f"Start komutu alındı, chat_id={update.effective_chat.id}")
         keyboard = [
             [InlineKeyboardButton("Top 100 Spot Analizi", callback_data='top_100_spot')],
             [InlineKeyboardButton("Top 300 Spot Analizi", callback_data='top_300_spot')],
@@ -63,47 +71,52 @@ class TelegramBot:
         await update.message.reply_text("Analiz için butonları kullanabilirsiniz:", reply_markup=reply_markup)
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Buton tıklamalarını işler ve analiz başlatır."""
         query = update.callback_query
         await query.answer()
-        logger.debug(f"Button clicked: {query.data}")
+        logger.debug(f"Buton tıklandı: {query.data}")
         try:
             parts = query.data.split('_')
             limit = int(parts[1])
             trade_type = parts[2]
             await query.message.reply_text(f"{trade_type.upper()} analizi yapılıyor (Top {limit})...")
             data = {'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type}
-            if context.job_queue is None:
-                logger.warning("context.job_queue is None, running analyze_and_send directly")
+            
+            # Job queue kontrolü
+            if self.app.job_queue is None:
+                logger.warning("Job queue mevcut değil, analyze_and_send direkt çalıştırılıyor")
                 await self.analyze_and_send(context, data)
             else:
-                context.job_queue.run_once(
+                self.app.job_queue.run_once(
                     self.analyze_and_send,
                     0,
                     data=data,
                     chat_id=self.group_id
                 )
         except Exception as e:
-            logger.error(f"Error in button handler: {e}")
+            logger.error(f"Buton işleyicisinde hata: {e}")
             await query.message.reply_text(f"Hata: {str(e)}")
 
     async def analyze_and_send(self, context: ContextTypes.DEFAULT_TYPE, data=None):
+        """Coin analizini yapar ve sonuçları gönderir."""
         if data is None:
             data = context.job.data
         chat_id = data['chat_id']
         limit = data['limit']
         trade_type = data['trade_type']
-        logger.debug(f"Analyzing for chat_id={chat_id}, limit={limit}, trade_type={trade_type}")
+        logger.debug(f"Analiz yapılıyor: chat_id={chat_id}, limit={limit}, trade_type={trade_type}")
         try:
             results = await self.analyze_coins(limit, trade_type, chat_id)
             if not results.get(f'top_{limit}_{trade_type}'):
                 await context.bot.send_message(chat_id=chat_id, text=f"Top {limit} {trade_type} analizi için anlamlı sonuç bulunamadı.")
-            logger.info(f"Analysis completed for Top {limit} {trade_type}")
+            logger.info(f"Top {limit} {trade_type} için analiz tamamlandı")
         except Exception as e:
-            logger.error(f"Error in analyze_and_send: {e}")
+            logger.error(f"analyze_and_send sırasında hata: {e}")
             await context.bot.send_message(chat_id=chat_id, text=f"{trade_type} analizi sırasında hata: {str(e)}")
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.debug(f"Chat message: {update.message.text}")
+        """Kullanıcı mesajlarına yanıt verir."""
+        logger.debug(f"Mesaj alındı: {update.message.text}")
         try:
             response = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -115,11 +128,12 @@ class TelegramBot:
             )
             await update.message.reply_text(response.choices[0].message.content)
         except Exception as e:
-            logger.error(f"Error in chat: {e}")
-            await update.message.reply_text(f"Error: {str(e)}")
+            logger.error(f"Chat sırasında hata: {e}")
+            await update.message.reply_text(f"Hata: {str(e)}")
 
     async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.debug("Show analysis command")
+        """Kaydedilmiş analiz sonuçlarını gösterir."""
+        logger.debug("show_analysis komutu alındı")
         try:
             storage = Storage()
             data = storage.load_analysis()
@@ -136,11 +150,12 @@ class TelegramBot:
             else:
                 await update.message.reply_text("Analiz sonucu bulunamadı.")
         except Exception as e:
-            logger.error(f"Error loading analysis: {e}")
+            logger.error(f"Analiz yüklenirken hata: {e}")
             await update.message.reply_text(f"Hata: {str(e)}")
 
     def format_results(self, coin_data, trade_type, symbol):
-        logger.debug(f"Formatting results for {symbol} ({trade_type})")
+        """Analiz sonuçlarını biçimlendirir."""
+        logger.debug(f"{symbol} ({trade_type}) için sonuçlar biçimlendiriliyor")
         indicators = coin_data.get('indicators', {})
         analysis = coin_data.get('deepseek_analysis', {}).get('short_term', {})
         # Hacim değişimlerini güvenli bir şekilde biçimlendir
@@ -169,15 +184,16 @@ class TelegramBot:
             )
             return message
         except Exception as e:
-            logger.error(f"Error formatting results for {symbol}: {e}")
-            return f"Error formatting {symbol} analysis: {str(e)}"
+            logger.error(f"{symbol} için sonuçlar biçimlendirilirken hata: {e}")
+            return f"{symbol} analizi biçimlendirilirken hata: {str(e)}"
 
     async def process_coin(self, symbol, mexc, deepseek, trade_type, chat_id):
-        logger.debug(f"Processing coin: {symbol} ({trade_type})")
+        """Tek bir coin için analiz yapar."""
+        logger.debug(f"{symbol} ({trade_type}) işleniyor")
         try:
             data = await mexc.fetch_and_save_market_data(symbol)
             if not data:
-                logger.warning(f"No valid market data for {symbol} ({trade_type})")
+                logger.warning(f"{symbol} ({trade_type}) için geçerli piyasa verisi yok")
                 await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için geçerli piyasa verisi yok")
                 return None
 
@@ -186,61 +202,64 @@ class TelegramBot:
                 data['klines'].get('30m', []), data['klines'].get('60m', []), data.get('order_book')
             )
             if not data['indicators']:
-                logger.warning(f"No indicators for {symbol} ({trade_type})")
+                logger.warning(f"{symbol} ({trade_type}) için gösterge hesaplanamadı")
                 await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için gösterge hesaplanamadı")
                 return None
 
             data['deepseek_analysis'] = deepseek.analyze_coin(data, trade_type)
-            logger.info(f"Processed {symbol} ({trade_type}): price={data.get('price')}, "
+            logger.info(f"{symbol} ({trade_type}) işlendi: fiyat={data.get('price')}, "
                        f"klines_60m={len(data['klines'].get('60m', []))}")
 
             message = self.format_results(data, trade_type, symbol)
             await self.app.bot.send_message(chat_id=chat_id, text=message)
-            logger.info(f"Analysis sent for {symbol} ({trade_type})")
+            logger.info(f"{symbol} ({trade_type}) için analiz gönderildi")
 
             storage = Storage()
             storage.save_analysis({f'{symbol}_{trade_type}': [data]})
 
             return data
         except Exception as e:
-            logger.error(f"Error processing {symbol} ({trade_type}): {e}")
+            logger.error(f"{symbol} ({trade_type}) işlenirken hata: {e}")
             await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} işlenirken hata: {str(e)}")
             return None
 
     async def analyze_coins(self, limit, trade_type, chat_id):
-        logger.debug(f"Starting analyze_coins for limit={limit}, trade_type={trade_type}")
+        """Top coin'ler için analiz yapar."""
+        logger.debug(f"analyze_coins başlatılıyor: limit={limit}, trade_type={trade_type}")
         mexc = MEXCClient()
         deepseek = DeepSeekClient()
 
         coins = await mexc.get_top_coins(limit)
-        logger.info(f"Analyzing {len(coins)} coins: {coins[:5]}...")
+        logger.info(f"{len(coins)} coin analiz ediliyor: {coins[:5]}...")
 
         results = {'date': datetime.now().strftime('%Y-%m-%d'), f'top_{limit}_{trade_type}': []}
         for symbol in coins:
             coin_data = await self.process_coin(symbol, mexc, deepseek, trade_type, chat_id)
             if coin_data:
                 results[f'top_{limit}_{trade_type}'].append(coin_data)
-            await asyncio.sleep(3.0)  # Rate limit için artırıldı
-        logger.info(f"Processed {len(results[f'top_{limit}_{trade_type}'])} valid coins for Top {limit} {trade_type}")
+            await asyncio.sleep(3.0)  # Rate limit için bekleme
+        logger.info(f"Top {limit} {trade_type} için {len(results[f'top_{limit}_{trade_type}'])} geçerli coin işlendi")
         await mexc.close()
         return results
 
     async def webhook_handler(self, request):
-        logger.debug("Webhook request received")
+        """Webhook isteklerini işler."""
+        logger.debug("Webhook isteği alındı")
         try:
             raw_data = await request.json()
             update = Update.de_json(raw_data, self.app.bot)
             if not update:
-                logger.warning("Invalid webhook update")
-                return web.Response(text="ERROR: Invalid update", status=400)
+                logger.warning("Geçersiz webhook güncellemesi")
+                return web.Response(text="HATA: Geçersiz güncelleme", status=400)
             await self.app.process_update(update)
             return web.Response(text="OK")
         except Exception as e:
-            logger.error(f"Webhook error: {e}")
-            return web.Response(text=f"ERROR: {str(e)}", status=500)
+            logger.error(f"Webhook hatası: {e}")
+            return web.Response(text=f"HATA: {str(e)}", status=500)
 
     async def run(self):
-        logger.debug("Starting webhook server")
+        """Webhook sunucusunu başlatır."""
+        logger.debug("Webhook sunucusu başlatılıyor")
         await self.app.initialize()
         await self.app.start()
         self.web_app = web.Application()
@@ -248,24 +267,25 @@ class TelegramBot:
         webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
         try:
             await self.app.bot.set_webhook(url=webhook_url)
-            logger.debug(f"Webhook set to {webhook_url}")
+            logger.debug(f"Webhook {webhook_url} adresine ayarlandı")
         except Exception as e:
-            logger.error(f"Error setting webhook: {e}")
+            logger.error(f"Webhook ayarlanırken hata: {e}")
             raise
         runner = web.AppRunner(self.web_app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
         await site.start()
-        logger.info(f"Webhook server running on port {os.getenv('PORT', 8443)}")
+        logger.info(f"Webhook sunucusu {os.getenv('PORT', 8443)} portunda çalışıyor")
         await asyncio.Event().wait()
 
 def main():
-    logger.debug("Starting main")
+    """Ana fonksiyon, botu başlatır."""
+    logger.debug("Main başlatılıyor")
     bot = TelegramBot()
     asyncio.run(bot.run())
 
 if __name__ == "__main__":
-    logger.debug("Script started")
+    logger.debug("Script başlatıldı")
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "analyze_coins":
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 100
