@@ -62,11 +62,11 @@ class TelegramBot:
             parts = query.data.split('_')
             limit = int(parts[1])
             trade_type = parts[2]
-            message = await query.message.reply_text(f"{trade_type.upper()} analizi yapılıyor (Top {limit})...")
+            await query.message.reply_text(f"{trade_type.upper()} analizi yapılıyor (Top {limit})...")
             context.job_queue.run_once(
                 self.analyze_and_send,
                 0,
-                data={'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type, 'query_message_id': message.message_id},
+                data={'chat_id': self.group_id, 'limit': limit, 'trade_type': trade_type},
                 chat_id=self.group_id
             )
         except Exception as e:
@@ -78,7 +78,6 @@ class TelegramBot:
         chat_id = data['chat_id']
         limit = data['limit']
         trade_type = data['trade_type']
-        query_message_id = data.get('query_message_id')
         try:
             results = await self.analyze_coins(limit, trade_type)
             message = self.format_results(results, trade_type)
@@ -86,22 +85,10 @@ class TelegramBot:
                 logger.warning(f"No analysis results for Top {limit} {trade_type}")
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"No significant results for Top {limit} {trade_type} analysis.",
-                    reply_to_message_id=query_message_id if query_message_id else None
+                    text=f"No significant results for Top {limit} {trade_type} analysis."
                 )
             else:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=message,
-                    reply_to_message_id=query_message_id if query_message_id else None
-                )
-        except BadRequest as e:
-            logger.error(f"BadRequest in analyze_and_send: {e}")
-            # Reply_to_message_id başarısız olursa, direk mesaj gönder
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"Error during {trade_type} analysis: {str(e)}"
-            )
+                await context.bot.send_message(chat_id=chat_id, text=message)
         except Exception as e:
             logger.error(f"Error in analyze_and_send: {e}")
             await context.bot.send_message(
