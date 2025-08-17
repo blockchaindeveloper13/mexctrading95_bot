@@ -1,0 +1,402 @@
+[
+  {
+    "symbol": "LINKUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=LINKUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ETHUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ETHUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "BTCUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "SOLUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=SOLUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "USDCUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=USDCUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=DOGEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ARBUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ARBUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ADAUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=XRPUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "MBGUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=MBGUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "AVAXUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=AVAXUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "USDEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=USDEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "TRXUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=TRXUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "PROVEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=PROVEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "BNBUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=BNBUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "LTCUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=LTCUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ENAUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ENAUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "OKBUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=OKBUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "SUIUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=SUIUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "TRUMPUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=TRUMPUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "CYBERUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=CYBERUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "BIOUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=BIOUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "PEPEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=PEPEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "DAIUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=DAIUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "SUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=SUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "PENGUUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=PENGUUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "PONDUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=PONDUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "FDUSDUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=FDUSDUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "HBARUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=HBARUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "MNTUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=MNTUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ZORAUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ZORAUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "WLDUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=WLDUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ATLAUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ATLAUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=NEARUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "WIFUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=WIFUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ALPINEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ALPINEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "SKLUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=SKLUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=DOTUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=CRVUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "APTUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=APTUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "EPICUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=EPICUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "PUMPUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=PUMPUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "OPUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=OPUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "INJUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=INJUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "XLMUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=XLMUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "SEIUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=SEIUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "BONKUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=BONKUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "WBTUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=WBTUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "TONUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=TONUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "LDOUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=LDOUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ETHFIUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ETHFIUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "TAOUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=TAOUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "POLUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=POLUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ONDOUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ONDOUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "PENDLEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=PENDLEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "AIXUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=AIXUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "MAVUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=MAVUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "TPTUUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=TPTUUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "BERAUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=BERAUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "LPTUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=LPTUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "EIGENUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=EIGENUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "TIAUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=TIAUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=UNIUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "MOVRUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=MOVRUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "FILUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=FILUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "GALAUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=GALAUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "KASUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=KASUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "TOWNSUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=TOWNSUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ETCUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "PNUTUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=PNUTUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ALGOUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ALGOUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "NMRUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=NMRUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "CAKEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=CAKEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=AAVEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "RAYUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=RAYUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "NODEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=NODEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ZKUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ZKUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "WBTCUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=WBTCUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "CFXUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=CFXUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "CHRUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=CHRUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "SPKUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=SPKUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "OGUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=OGUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "XMRUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=XMRUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "RUNEUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=RUNEUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ATOMUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "CELRUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=CELRUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "SHIBUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=SHIBUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "MXUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=MXUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=BCHUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "IPUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=IPUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "HOTUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=HOTUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "FLRUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=FLRUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "FUSDUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=FUSDUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "API3USDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=API3USDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ULTIMAUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ULTIMAUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "ALEOUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=ALEOUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "AIXBTUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=AIXBTUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "FTNUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=FTNUSDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "H1USDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=H1USDT&interval=60m&limit=100"
+  },
+  {
+    "symbol": "PROMPTUSDT",
+    "endpoint": "https://api.mexc.com/api/v3/klines?symbol=PROMPTUSDT&interval=60m&limit=100"
+  }
+]
