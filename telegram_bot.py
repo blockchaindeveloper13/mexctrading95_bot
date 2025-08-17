@@ -83,12 +83,9 @@ class TelegramBot:
             message = self.format_results(results, trade_type)
             if message.strip().endswith(f"TOP_{limit}_{trade_type.upper()}:\n"):
                 logger.warning(f"No analysis results for Top {limit} {trade_type}")
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"No significant results for Top {limit} {trade_type} analysis."
-                )
-            else:
-                await context.bot.send_message(chat_id=chat_id, text=message)
+                message = f"No significant results for Top {limit} {trade_type} analysis. Please try again later."
+            await context.bot.send_message(chat_id=chat_id, text=message)
+            logger.info(f"Analysis sent to Telegram for Top {limit} {trade_type}")
         except Exception as e:
             logger.error(f"Error in analyze_and_send: {e}")
             await context.bot.send_message(
@@ -129,10 +126,13 @@ class TelegramBot:
             await update.message.reply_text("No analysis found.")
 
     def format_results(self, data, trade_type):
-        message = f"📊 {trade_type.upper()} Günlük Coin Analizi ({data['date']})\n"
+        message = f"📊 {trade_type.upper()} Günlük Coin Analizi ({data.get('date', 'Unknown')})\n"
         for category in [f'top_100_{trade_type}', f'top_300_{trade_type}']:
             message += f"\n{category.upper()}:\n"
             coins = data.get(category, [])
+            if not coins:
+                message += "No coins analyzed yet.\n"
+                continue
             coins.sort(
                 key=lambda x: x.get('deepseek_analysis', {}).get('short_term', {}).get('pump_probability', 0),
                 reverse=True
@@ -141,13 +141,13 @@ class TelegramBot:
                 indicators = coin.get('indicators', {})
                 message += f"{i}. {coin.get('coin', 'Unknown')}\n"
                 message += (
-                    f"- Kısa Vadeli: Giriş: ${coin['deepseek_analysis']['short_term'].get('entry_price', 0):.2f} | "
-                    f"Çıkış: ${coin['deepseek_analysis']['short_term'].get('exit_price', 0):.2f} | "
-                    f"Stop Loss: ${coin['deepseek_analysis']['short_term'].get('stop_loss', 0):.2f} | "
-                    f"Kaldıraç: {coin['deepseek_analysis']['short_term'].get('leverage', 'N/A')}\n"
-                    f"- Pump Olasılığı: {coin['deepseek_analysis']['short_term'].get('pump_probability', 0)}% | "
-                    f"Dump Olasılığı: {coin['deepseek_analysis']['short_term'].get('dump_probability', 0)}%\n"
-                    f"- Temel Analiz: {coin['deepseek_analysis']['short_term'].get('fundamental_analysis', 'No data')}\n"
+                    f"- Kısa Vadeli: Giriş: ${coin.get('deepseek_analysis', {}).get('short_term', {}).get('entry_price', 0):.2f} | "
+                    f"Çıkış: ${coin.get('deepseek_analysis', {}).get('short_term', {}).get('exit_price', 0):.2f} | "
+                    f"Stop Loss: ${coin.get('deepseek_analysis', {}).get('short_term', {}).get('stop_loss', 0):.2f} | "
+                    f"Kaldıraç: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('leverage', 'N/A')}\n"
+                    f"- Pump Olasılığı: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('pump_probability', 0)}% | "
+                    f"Dump Olasılığı: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('dump_probability', 0)}%\n"
+                    f"- Temel Analiz: {coin.get('deepseek_analysis', {}).get('short_term', {}).get('fundamental_analysis', 'No data')}\n"
                     f"- Hacim Değişimleri: 1h: {indicators.get('volume_change_1h', 'N/A'):.2f}% | "
                     f"3h: {indicators.get('volume_change_3h', 'N/A'):.2f}% | "
                     f"6h: {indicators.get('volume_change_6h', 'N/A'):.2f}% | "
@@ -159,18 +159,17 @@ class TelegramBot:
     async def process_coin(self, symbol, mexc, deepseek, trade_type):
         try:
             data = await mexc.get_market_data(symbol)
-            if data:
-                from indicators import calculate_indicators
-                data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'], data.get('order_book'))
-                if data['indicators']:
-                    data['deepseek_analysis'] = deepseek.analyze_coin(data, trade_type)
-                    logger.info(f"Processed {symbol} ({trade_type}) successfully")
-                    return data
-                else:
-                    logger.warning(f"No indicators calculated for {symbol} ({trade_type})")
-            else:
+            if not data:
                 logger.warning(f"No market data for {symbol} ({trade_type})")
-            return None
+                return None
+            from indicators import calculate_indicators
+            data['indicators'] = calculate_indicators(data['klines_1h'], data['klines_4h'], data.get('order_book'))
+            if not data['indicators']:
+                logger.warning(f"No indicators calculated for {symbol} ({trade_type})")
+                return None
+            data['deepseek_analysis'] = deepseek.analyze_coin(data, trade_type)
+            logger.info(f"Processed {symbol} ({trade_type}) successfully")
+            return data
         except Exception as e:
             logger.error(f"Error processing {symbol} ({trade_type}): {e}")
             return None
@@ -185,15 +184,21 @@ class TelegramBot:
         storage = Storage()
         
         coins = await mexc.get_top_coins(limit)
+        logger.info(f"Starting analysis for {len(coins)} coins ({trade_type})")
         results = {'date': datetime.now().strftime('%Y-%m-%d'), f'top_100_{trade_type}': [], f'top_300_{trade_type}': []}
         
         tasks = [self.process_coin(symbol, mexc, deepseek, trade_type) for symbol in coins]
         coin_data = await asyncio.gather(*tasks, return_exceptions=True)
         
+        valid_coins = []
         for data in coin_data:
             if data and not isinstance(data, Exception):
-                results[f'top_100_{trade_type}' if limit == 100 else f'top_300_{trade_type}'].append(data)
+                valid_coins.append(data)
+            elif isinstance(data, Exception):
+                logger.error(f"Exception in coin processing: {data}")
         
+        results[f'top_100_{trade_type}' if limit == 100 else f'top_300_{trade_type}'] = valid_coins
+        logger.info(f"Processed {len(valid_coins)} valid coins for Top {limit} {trade_type}")
         storage.save_analysis(results)
         await mexc.close()
         return results
