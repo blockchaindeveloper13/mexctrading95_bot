@@ -1,9 +1,11 @@
 import aiohttp
 import os
-import hmac
-import hashlib
-import time
+import logging
 from dotenv import load_dotenv
+
+# Loglama ayarları
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -27,9 +29,10 @@ class MEXCClient:
                         reverse=True
                     )
                     top_coins = [coin['symbol'] for coin in sorted_coins if coin['symbol'].endswith('USDT')][:limit]
+                    logger.info(f"Fetched {len(top_coins)} top coins")
                     return top_coins
         except Exception as e:
-            print(f"Error fetching top coins: {e}")
+            logger.error(f"Error fetching top coins: {e}")
             return []
 
     async def get_market_data(self, symbol):
@@ -60,13 +63,13 @@ class MEXCClient:
 
                 return {
                     'coin': symbol,
-                    'klines_1h': klines_1h,
-                    'klines_4h': klines_4h,
+                    'klines_1h': [[float(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in klines_1h],  # [open_time, open, high, low, close, volume]
+                    'klines_4h': [[float(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in klines_4h],
                     'price': float(ticker['lastPrice']),
                     'volume': float(ticker['quoteVolume'])
                 }
         except Exception as e:
-            print(f"Error fetching market data for {symbol}: {e}")
+            logger.error(f"Error fetching market data for {symbol}: {e}")
             return None
 
     async def close(self):
