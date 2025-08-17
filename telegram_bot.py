@@ -158,7 +158,7 @@ class DeepSeekClient:
             Grup konuşmalarındaki sorulara veya yorumlara yanıt ver. Yanıtın akıcı, profesyonel ve en az 500 karakter olsun. Sabit ifadelerden uzak dur, yaratıcı ol.
             """
             response = self.client.chat.completions.create(
-                model="deepseek-reason",  # Model deepseek-reason olarak güncellendi
+                model="deepseek-reasoner",  # Model deepseek-reason olarak güncellendi
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=5000,
                 stream=False
@@ -617,7 +617,7 @@ class TelegramBot:
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     deepseek.client.chat.completions.create,
-                    model="deepseek-reason",  # Model deepseek-reason olarak güncellendi
+                    model="deepseek-reasoner",  # Model deepseek-reason olarak güncellendi
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=5000,
                     stream=False
