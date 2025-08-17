@@ -36,7 +36,7 @@ class MEXCClient:
         try:
             async with aiohttp.ClientSession() as session:
                 # Klines (1h and 4h)
-                klines_1h_url = f"{self.base_url}/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
+                klines_1h_url = f"{self.base_url}/api/v3/klines?symbol={symbol}&interval=60m&limit=100"
                 klines_4h_url = f"{self.base_url}/api/v3/klines?symbol={symbol}&interval=4h&limit=100"
                 ticker_url = f"{self.base_url}/api/v3/ticker/24hr?symbol={symbol}"
 
