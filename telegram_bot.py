@@ -106,8 +106,8 @@ class DeepSeekClient:
         - Direnç Seviyeleri: {', '.join([f'${x:.2f}' for x in data['indicators']['resistance_levels']])}
 
         Çıktı formatı:
-        - Long: Giriş, Çıkış, Stop-Loss, Kaldıraç, Risk/Ödül, Trend
-        - Short: Giriş, Çıkış, Stop-Loss, Kaldıraç, Risk/Ödül, Trend
+        - Long: Giriş: $X, Çıkış: $Y, Stop-Loss: $Z, Kaldıraç: Nx, Risk/Ödül: A:B, Trend: [Yükseliş/Düşüş/Nötr]
+        - Short: Giriş: $X, Çıkış: $Y, Stop-Loss: $Z, Kaldıraç: Nx, Risk/Ödül: A:B, Trend: [Yükseliş/Düşüş/Nötr]
         - Yorum: [Detaylı analiz ve gerekçe]
         """
         response = self.client.chat.completions.create(
