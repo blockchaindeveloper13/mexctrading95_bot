@@ -35,33 +35,36 @@ class MEXCClient:
     """MEXC Spot API ile iletişim kurar."""
     def __init__(self):
         self.spot_url = "https://api.mexc.com"
+        self.session = None
 
     async def fetch_market_data(self, symbol):
         """Spot piyasası verisi çeker."""
-        async with aiohttp.ClientSession() as session:
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+        async with self.session:
             klines = {}
             for interval in ['5m', '15m', '60m']:
                 url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=200"
-                async with session.get(url) as response:
+                async with self.session.get(url) as response:
                     response_data = await response.json() if response.status == 200 else []
                     klines[interval] = {'data': response_data}
                     logger.info(f"Kline response for {symbol} ({interval}): {response_data[:1]}...")
                 await asyncio.sleep(0.2)
 
             order_book_url = f"{self.spot_url}/api/v3/depth?symbol={symbol}&limit=10"
-            async with session.get(order_book_url) as response:
+            async with self.session.get(order_book_url) as response:
                 order_book = await response.json() if response.status == 200 else {'bids': [], 'asks': []}
                 logger.info(f"Order book response for {symbol}: {order_book}")
             await asyncio.sleep(0.2)
 
             ticker_url = f"{self.spot_url}/api/v3/ticker/price?symbol={symbol}"
-            async with session.get(ticker_url) as response:
+            async with self.session.get(ticker_url) as response:
                 ticker = await response.json() if response.status == 200 else {'price': '0.0'}
                 logger.info(f"Ticker response for {symbol}: {ticker}")
             await asyncio.sleep(0.2)
 
             ticker_24hr_url = f"{self.spot_url}/api/v3/ticker/24hr?symbol={symbol}"
-            async with session.get(ticker_24hr_url) as response:
+            async with self.session.get(ticker_24hr_url) as response:
                 ticker_24hr = await response.json() if response.status == 200 else {'priceChangePercent': '0.0'}
                 logger.info(f"24hr ticker response for {symbol}: {ticker_24hr}")
             await asyncio.sleep(0.2)
@@ -78,21 +81,31 @@ class MEXCClient:
 
     async def fetch_btc_data(self):
         """BTC/USDT spot verilerini çeker."""
-        async with aiohttp.ClientSession() as session:
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+        async with self.session:
             url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=200"
-            async with session.get(url) as response:
+            async with self.session.get(url) as response:
                 response_data = await response.json() if response.status == 200 else []
                 logger.info(f"BTC data response: {response_data[:1]}...")
                 return {'data': response_data}
 
     async def validate_symbol(self, symbol):
         """Sembolü spot piyasasında doğrular."""
-        async with aiohttp.ClientSession() as session:
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+        async with self.session:
             url = f"{self.spot_url}/api/v3/ticker/price?symbol={symbol}"
-            async with session.get(url) as response:
+            async with self.session.get(url) as response:
                 response_data = await response.json()
                 logger.info(f"Validate symbol response for {symbol}: {response_data}")
                 return response.status == 200 and 'price' in response_data
+
+    async def close(self):
+        """Session’ı kapatır."""
+        if self.session:
+            await self.session.close()
+            self.session = None
 
 class DeepSeekClient:
     """DeepSeek API ile analiz yapar."""
@@ -147,14 +160,13 @@ class DeepSeekClient:
                     max_tokens=1000,
                     stream=False
                 ),
-                timeout=120.0  # 2 dakika
+                timeout=120.0
             )
             analysis_text = response.choices[0].message.content
             logger.info(f"DeepSeek raw response for {symbol}: {analysis_text}")
             if len(analysis_text) < 500:
                 analysis_text += " " * (500 - len(analysis_text))
             
-            # Yanıtı kontrol et
             required_fields = ['Giriş', 'Take-Profit', 'Stop-Loss', 'Kaldıraç', 'Risk/Ödül', 'Trend', 'Yorum']
             missing_fields = []
             for field in required_fields:
@@ -176,6 +188,7 @@ class Storage:
     def __init__(self):
         self.db_path = "analysis.db"
         self.init_db()
+        self.conn = None
 
     def init_db(self):
         """SQLite veritabanını başlatır."""
@@ -227,6 +240,26 @@ class Storage:
             logger.error(f"SQLite error while fetching analysis for {symbol}: {e}")
             return None
 
+    def get_latest_analysis(self, symbol):
+        """Sembol için en son analizi çeker (sohbet için)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT analysis_text FROM analyses WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1
+                """, (symbol,))
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error while fetching latest analysis for {symbol}: {e}")
+            return None
+
+    def close(self):
+        """Veritabanı bağlantısını kapatır."""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
 def calculate_indicators(kline_data, order_book, btc_data, symbol):
     """Teknik göstergeleri hesaplar."""
     indicators = {}
@@ -240,7 +273,6 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
                 df['low'] = df['low'].astype(float)
                 df['volume'] = df['volume'].astype(float)
 
-                # MA50 ve MA200
                 sma_50 = ta.sma(df['close'], length=50) if len(df) >= 50 else None
                 sma_200 = ta.sma(df['close'], length=200) if len(df) >= 200 else None
                 indicators[f'ma_{interval}'] = {
@@ -248,15 +280,12 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
                     'ma200': sma_200.iloc[-1] if sma_200 is not None and not sma_200.empty else 0.0
                 }
 
-                # RSI
                 rsi = ta.rsi(df['close'], length=14) if len(df) >= 14 else None
                 indicators[f'rsi_{interval}'] = rsi.iloc[-1] if rsi is not None and not rsi.empty else 0.0
 
-                # ATR
                 atr = ta.atr(df['high'], df['low'], df['close'], length=14) if len(df) >= 14 else None
                 indicators[f'atr_{interval}'] = (atr.iloc[-1] / df['close'].iloc[-1] * 100) if atr is not None and not atr.empty else 0.0
 
-                # Manuel Pivot Noktaları ve Fibonacci Seviyeleri
                 last_row = df.iloc[-1]
                 pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
                 range_high_low = last_row['high'] - last_row['low']
@@ -322,13 +351,14 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CallbackQueryHandler(self.button))
         self.app.add_handler(ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex(r'\b(analiz|trend|long|short|destek|direnç|yorum|neden)\b.*\b(' + '|'.join(COINS) + r')\b'), self.handle_analysis_query)],
+            entry_points=[MessageHandler(filters.Regex(r'(?i)\b(analiz|trend|long|short|destek|direnç|yorum|neden)\b.*\b(' + '|'.join(COINS) + r')\b'), self.handle_analysis_query)],
             states={
                 ASKING_ANALYSIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_analysis_query)]
             },
             fallbacks=[CommandHandler("cancel", self.cancel)]
         ))
         self.active_analyses = {}
+        self.mexc = MEXCClient()
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Coin butonlarını gösterir."""
@@ -339,7 +369,7 @@ class TelegramBot:
         """Buton tıklamalarını işler."""
         query = update.callback_query
         try:
-            await query.answer()  # Hemen yanıt ver
+            await query.answer()
         except Exception as e:
             logger.error(f"Error answering callback query: {e}")
         symbol = query.data.replace("analyze_", "")
@@ -348,39 +378,29 @@ class TelegramBot:
             await query.message.reply_text(f"⏳ {symbol} için analiz yapılıyor, bekleyin.")
             return
         self.active_analyses[analysis_key] = True
-        mexc = MEXCClient()
-        if not await mexc.validate_symbol(symbol):
+        if not await self.mexc.validate_symbol(symbol):
             await query.message.reply_text(f"❌ Hata: {symbol} spot piyasasında mevcut değil.")
             del self.active_analyses[analysis_key]
             return
         await query.message.reply_text(f"🔍 {symbol} için vadeli işlem analizi yapılıyor...")
-        asyncio.create_task(self.process_coin(symbol, mexc, update.effective_chat.id))  # Asenkron görev
+        asyncio.create_task(self.process_coin(symbol, update.effective_chat.id))
         del self.active_analyses[analysis_key]
 
     async def handle_analysis_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Analizle ilgili soruları yanıtlar."""
         text = update.message.text.lower()
+        logger.info(f"Received message: {text}")
         symbol = None
         for coin in COINS:
             if coin.lower() in text:
                 symbol = coin
                 break
         if not symbol:
+            logger.info(f"No valid coin symbol found in message: {text}")
             await update.message.reply_text("🔍 Lütfen geçerli bir coin sembolü belirtin (örn: ADAUSDT).")
             return ASKING_ANALYSIS
 
-        # Güncel analiz için son mesajı kontrol et
-        current_analysis = None
-        try:
-            messages = await context.bot.get_chat_history(update.effective_chat.id, limit=10)
-            for msg in messages:
-                if msg.text and symbol in msg.text and "Vadeli Analiz" in msg.text:
-                    current_analysis = msg.text
-                    break
-        except Exception as e:
-            logger.error(f"Error fetching chat history: {e}")
-
-        # Geçmiş analiz
+        current_analysis = self.storage.get_latest_analysis(symbol)
         previous_analysis = self.storage.get_previous_analysis(symbol)
         response = f"📊 {symbol} için analiz:\n"
 
@@ -452,6 +472,7 @@ class TelegramBot:
         if not current_analysis and not previous_analysis:
             response += f"❌ {symbol} için analiz bulunamadı. Yeni analiz yapmamı ister misiniz?"
 
+        logger.info(f"Sending response for {symbol}: {response[:200]}...")
         await update.message.reply_text(response)
         return ASKING_ANALYSIS
 
@@ -460,10 +481,10 @@ class TelegramBot:
         await update.message.reply_text("❌ Konuşma iptal edildi.")
         return ConversationHandler.END
 
-    async def process_coin(self, symbol, mexc, chat_id):
+    async def process_coin(self, symbol, chat_id):
         """Coin için analiz yapar."""
         try:
-            data = await mexc.fetch_market_data(symbol)
+            data = await self.mexc.fetch_market_data(symbol)
             if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m']):
                 await self.app.bot.send_message(chat_id=chat_id, text=f"❌ {symbol} için veri yok.")
                 return None
@@ -495,11 +516,14 @@ class TelegramBot:
             site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
             await site.start()
             logger.info("Application started successfully")
-            await asyncio.Event().wait()
+            while True:
+                await asyncio.sleep(3600)  # 1 saatlik döngü
         except Exception as e:
             logger.error(f"Error starting application: {e}")
         finally:
             logger.info("Shutting down application...")
+            await self.mexc.close()
+            self.storage.close()
             await self.app.stop()
             await self.app.shutdown()
             logger.info("Application shut down")
@@ -521,6 +545,8 @@ def main():
 
     def handle_sigterm(*args):
         logger.info("Received SIGTERM, shutting down...")
+        asyncio.create_task(bot.mexc.close())
+        asyncio.create_task(bot.storage.close())
         asyncio.create_task(bot.app.stop())
         asyncio.create_task(bot.app.shutdown())
 
