@@ -241,13 +241,13 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
         kline = kline_data.get(interval, {}).get('data', [])
         if kline and len(kline) > 1:
             try:
-                df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume', 'ignore'])
+                df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
                 df['close'] = df['close'].astype(float)
                 df['high'] = df['high'].astype(float)
                 df['low'] = df['low'].astype(float)
                 df['volume'] = df['volume'].astype(float)
 
-                # MA50 ve MA200 için veri uzunluğu kontrolü
+                # MA50 ve MA200
                 sma_50 = ta.sma(df['close'], length=50) if len(df) >= 50 else None
                 sma_200 = ta.sma(df['close'], length=200) if len(df) >= 200 else None
                 indicators[f'ma_{interval}'] = {
@@ -347,10 +347,10 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
         logger.warning(f"Order book for {symbol} has no bids or asks")
 
     if btc_data.get('data') and len(btc_data['data']) > 1:
-        btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume', 'ignore'])
+        btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
         btc_df['close'] = btc_df['close'].astype(float)
         if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
-            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume', 'ignore'])
+            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
             coin_df['close'] = coin_df['close'].astype(float)
             correlation = coin_df['close'].corr(btc_df['close'])
             indicators['btc_correlation'] = correlation if not np.isnan(correlation) else 0.0
