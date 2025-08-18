@@ -13,6 +13,7 @@ from datetime import datetime
 import sqlite3
 import re
 import numpy as np
+import json
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,6 +31,7 @@ class MEXCClient:
     """MEXC API ile iletişim kurar."""
     def __init__(self):
         self.base_url = "https://contract.mexc.com"
+        self.spot_url = "https://api.mexc.com"
 
     async def fetch_market_data(self, symbol):
         """Vadeli işlem verisi çeker."""
@@ -43,7 +45,8 @@ class MEXCClient:
 
             order_book_url = f"{self.base_url}/api/v1/contract/depth/{symbol}?limit=10"
             async with session.get(order_book_url) as response:
-                order_book = await response.json() if response.status == 200 else {'data': {'bids': [], 'asks': []}}
+                order_book = await response.json() if response.status == 200 else {'bids': [], 'asks': []}
+                logger.info(f"Order book response for {symbol}: {order_book}")  # Debug log
             await asyncio.sleep(0.5)
 
             ticker_url = f"{self.base_url}/api/v1/contract/ticker?symbol={symbol}"
@@ -56,12 +59,18 @@ class MEXCClient:
                 funding = await response.json() if response.status == 200 else {'data': {'fundingRate': 0.0}}
             await asyncio.sleep(0.5)
 
+            ticker_24hr_url = f"{self.spot_url}/api/v3/ticker/24hr?symbol={symbol}"
+            async with session.get(ticker_24hr_url) as response:
+                ticker_24hr = await response.json() if response.status == 200 else {'priceChangePercent': '0.0'}
+            await asyncio.sleep(0.5)
+
             btc_data = await self.fetch_btc_data()
             return {
                 'klines': klines,
                 'order_book': order_book,
                 'price': float(ticker.get('data', {}).get('lastPrice', 0.0)),
                 'funding_rate': float(funding.get('data', {}).get('fundingRate', 0.0)),
+                'price_change_24hr': float(ticker_24hr.get('priceChangePercent', 0.0)),
                 'btc_data': btc_data
             }
 
@@ -87,10 +96,11 @@ class DeepSeekClient:
     def analyze_coin(self, symbol, data):
         """Coin için long/short analizi yapar."""
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap. Yanıt tamamen Türkçe, 500-5000 karakter olmalı. Aşağıdaki verilere dayanarak long ve short pozisyonlar için giriş, çıkış, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Doğal ve profesyonel bir üslup kullan.
+        {symbol} için vadeli işlem analizi yap. Yanıt tamamen Türkçe, 500-5000 karakter olmalı. Aşağıdaki verilere dayanarak long ve short pozisyonlar için giriş, çıkış, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Fonlama oranı > %0.1 ise short pozisyon için risk uyarısı ekle. Doğal ve profesyonel bir üslup kullan.
 
         - Mevcut Fiyat: {data['price']} USDT
         - Fonlama Oranı: {data.get('funding_rate', 0.0)}%
+        - 24 Saatlik Fiyat Değişimi: {data.get('price_change_24hr', 0.0)}%
         - Göstergeler:
           - MA (5m): 50={data['indicators']['ma_5m']['ma50']:.2f}, 200={data['indicators']['ma_5m']['ma200']:.2f}
           - EMA (5m): 12={data['indicators']['ema_5m']['ema12']:.2f}, 26={data['indicators']['ema_5m']['ema26']:.2f}
@@ -279,12 +289,13 @@ def calculate_indicators(kline_data, order_book, btc_data):
                 f'atr_{interval}': 0.0
             })
 
-    if order_book['data'].get('bids') and order_book['data'].get('asks'):
-        bid_volume = sum(float(bid[1]) for bid in order_book['data']['bids'])
-        ask_volume = sum(float(ask[1]) for ask in order_book['data']['asks'])
+    if order_book.get('bids') and order_book.get('asks'):
+        bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
+        ask_volume = sum(float(ask[1]) for ask in order_book['asks'])
         indicators['bid_ask_ratio'] = bid_volume / ask_volume if ask_volume > 0 else 0.0
     else:
         indicators['bid_ask_ratio'] = 0.0
+        logger.warning(f"Order book for {order_book.get('symbol', 'unknown')} has no bids or asks")
 
     if btc_data.get('data') and len(btc_data['data']) > 1:
         btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
