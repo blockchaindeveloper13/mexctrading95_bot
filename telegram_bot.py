@@ -6,7 +6,7 @@ import asyncio
 import aiohttp
 import signal
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from openai import AsyncOpenAI
 from aiohttp import web
 from dotenv import load_dotenv
@@ -28,9 +28,6 @@ COINS = [
     "UNIUSDT", "ATOMUSDT", "CRVUSDT", "TRUMPUSDT", "AAVEUSDT", "BNBUSDT"
 ]
 
-# Konuşma durumları
-ASKING_ANALYSIS = 0
-
 class MEXCClient:
     """MEXC Spot API ile iletişim kurar."""
     def __init__(self):
@@ -45,7 +42,7 @@ class MEXCClient:
     async def fetch_market_data(self, symbol):
         """Spot piyasası verisi çeker."""
         await self.initialize()
-        async with self.session:
+        try:
             klines = {}
             for interval in ['5m', '15m', '60m']:
                 url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=200"
@@ -82,6 +79,8 @@ class MEXCClient:
                 'price_change_24hr': float(ticker_24hr.get('priceChangePercent', 0.0)),
                 'btc_data': btc_data
             }
+        finally:
+            await self.close()
 
     async def fetch_btc_data(self):
         """BTC/USDT spot verilerini çeker."""
@@ -186,7 +185,7 @@ class DeepSeekClient:
             raise Exception(f"DeepSeek API'den veri alınamadı: {str(e)}")
 
 class Storage:
-    """Analizleri SQLite’ta depolar."""
+    """Analizleri ve konuşma geçmişini SQLite’ta depolar."""
     def __init__(self):
         self.db_path = "analysis.db"
         self.init_db()
@@ -202,6 +201,15 @@ class Storage:
                     timestamp TEXT,
                     indicators TEXT,
                     analysis_text TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER,
+                    user_message TEXT,
+                    bot_response TEXT,
+                    timestamp TEXT
                 )
             """)
             conn.commit()
@@ -223,6 +231,24 @@ class Storage:
                 conn.commit()
         except sqlite3.Error as e:
             logger.error(f"SQLite error while saving analysis for {symbol}: {e}")
+
+    def save_conversation(self, chat_id, user_message, bot_response):
+        """Konuşma geçmişini kaydeder."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO conversations (chat_id, user_message, bot_response, timestamp)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    chat_id,
+                    user_message,
+                    bot_response,
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                ))
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error while saving conversation for chat_id {chat_id}: {e}")
 
     def get_previous_analysis(self, symbol):
         """Sembol için en son analizi çeker."""
@@ -255,6 +281,24 @@ class Storage:
             logger.error(f"SQLite error while fetching latest analysis for {symbol}: {e}")
             return None
 
+    def get_conversation_history(self, chat_id, limit=10):
+        """Sohbet geçmişini çeker."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT user_message, bot_response, timestamp 
+                    FROM conversations 
+                    WHERE chat propietarios = ? 
+                    ORDER BY timestamp DESC 
+                    LIMIT ?
+                """, (chat_id, limit))
+                results = cursor.fetchall()
+                return [{'user_message': row[0], 'bot_response': row[1], 'timestamp': row[2]} for row in results]
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error while fetching conversation history for chat_id {chat_id}: {e}")
+            return []
+
 class TelegramBot:
     """Telegram botu."""
     def __init__(self):
@@ -265,20 +309,21 @@ class TelegramBot:
         self.app = Application.builder().token(bot_token).build()
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CallbackQueryHandler(self.button))
-        self.app.add_handler(ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex(r'(?i)(analiz|trend|long|short|destek|direnç|yorum|neden).*\b(' + '|'.join(COINS) + r')\b'), self.handle_analysis_query)],
-            states={
-                ASKING_ANALYSIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_analysis_query)]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel)]
-        ))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message))
         self.active_analyses = {}
         self.shutdown_event = asyncio.Event()
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Coin butonlarını gösterir."""
         keyboard = [[InlineKeyboardButton(coin, callback_data=f"analyze_{coin}")] for coin in COINS]
-        await update.message.reply_text("📈 Vadeli işlem analizi için coin seç:", reply_markup=InlineKeyboardMarkup(keyboard))
+        response = (
+            "📈 Vadeli işlem analizi için coin seç:\n"
+            "Metinle analiz için: 'ADAUSDT analiz' gibi yazın.\n"
+            "Örnek komutlar: 'ADAUSDT trend', 'ADAUSDT long', 'ADAUSDT destek'\n"
+            "Geçmiş konuşmaları görmek için: 'geçmiş' yazın."
+        )
+        await update.message.reply_text(response, reply_markup=InlineKeyboardMarkup(keyboard))
+        self.storage.save_conversation(update.effective_chat.id, update.message.text, response)
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Buton tıklamalarını işler."""
@@ -290,39 +335,93 @@ class TelegramBot:
         symbol = query.data.replace("analyze_", "")
         analysis_key = f"{symbol}_futures_{update.effective_chat.id}"
         if analysis_key in self.active_analyses:
-            await query.message.reply_text(f"⏳ {symbol} için analiz yapılıyor, bekleyin.")
+            response = f"⏳ {symbol} için analiz yapılıyor, bekleyin."
+            await query.message.reply_text(response)
+            self.storage.save_conversation(update.effective_chat.id, query.data, response)
             return
         self.active_analyses[analysis_key] = True
         try:
             if not await self.mexc.validate_symbol(symbol):
-                await query.message.reply_text(f"❌ Hata: {symbol} spot piyasasında mevcut değil.")
+                response = f"❌ Hata: {symbol} spot piyasasında mevcut değil."
+                await query.message.reply_text(response)
+                self.storage.save_conversation(update.effective_chat.id, query.data, response)
                 return
-            await query.message.reply_text(f"🔍 {symbol} için vadeli işlem analizi yapılıyor...")
+            response = f"🔍 {symbol} için vadeli işlem analizi yapılıyor..."
+            await query.message.reply_text(response)
+            self.storage.save_conversation(update.effective_chat.id, query.data, response)
             task = self.process_coin(symbol, update.effective_chat.id)
             if task is not None:
                 asyncio.create_task(task)
         finally:
             del self.active_analyses[analysis_key]
 
-    async def handle_analysis_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Analizle ilgili soruları yanıtlar."""
+    async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Tüm metin mesajlarını işler."""
         text = update.message.text.lower()
+        chat_id = update.effective_chat.id
         logger.info(f"Received message: {text}")
+
+        # Geçmiş konuşmaları gösterme
+        if "geçmiş" in text:
+            history = self.storage.get_conversation_history(chat_id, limit=10)
+            if not history:
+                response = "📜 Henüz konuşma geçmişi bulunmuyor."
+            else:
+                response = "📜 Son konuşmalar:\n"
+                for entry in history:
+                    response += f"🕒 {entry['timestamp']}\n👤 Kullanıcı: {entry['user_message']}\n🤖 Bot: {entry['bot_response']}\n\n"
+            await update.message.reply_text(response)
+            self.storage.save_conversation(chat_id, text, response)
+            return
+
+        # Coin sembolünü bul
         symbol = None
         for coin in COINS:
             if coin.lower() in text:
                 symbol = coin
                 break
+
         if not symbol:
-            logger.info(f"No valid coin symbol found in message: {text}")
-            await update.message.reply_text("🔍 Lütfen geçerli bir coin sembolü belirtin (örn: ADAUSDT).")
-            return ASKING_ANALYSIS
+            response = "🔍 Lütfen geçerli bir coin sembolü belirtin (örn: ADAUSDT). Örnek: 'ADAUSDT analiz' veya 'ADAUSDT trend'"
+            await update.message.reply_text(response)
+            self.storage.save_conversation(chat_id, text, response)
+            return
+
+        # Analizle ilgili anahtar kelimeleri kontrol et
+        keywords = ['analiz', 'trend', 'long', 'short', 'destek', 'direnç', 'yorum', 'neden']
+        matched_keyword = next((k for k in keywords if k in text), None)
 
         current_analysis = self.storage.get_latest_analysis(symbol)
         previous_analysis = self.storage.get_previous_analysis(symbol)
-        response = f"📊 {symbol} için analiz:\n"
+        response = f"📊 {symbol} için yanıt:\n"
 
-        if "trend" in text:
+        if not matched_keyword or matched_keyword == 'analiz':
+            # Yeni analiz başlat
+            analysis_key = f"{symbol}_futures_{chat_id}"
+            if analysis_key in self.active_analyses:
+                response = f"⏳ {symbol} için analiz yapılıyor, bekleyin."
+                await update.message.reply_text(response)
+                self.storage.save_conversation(chat_id, text, response)
+                return
+            self.active_analyses[analysis_key] = True
+            try:
+                if not await self.mexc.validate_symbol(symbol):
+                    response = f"❌ Hata: {symbol} spot piyasasında mevcut değil."
+                    await update.message.reply_text(response)
+                    self.storage.save_conversation(chat_id, text, response)
+                    return
+                response = f"🔍 {symbol} için vadeli işlem analizi yapılıyor..."
+                await update.message.reply_text(response)
+                self.storage.save_conversation(chat_id, text, response)
+                task = self.process_coin(symbol, chat_id)
+                if task is not None:
+                    asyncio.create_task(task)
+            finally:
+                del self.active_analyses[analysis_key]
+            return
+
+        # Diğer anahtar kelimelere göre yanıt
+        if matched_keyword == 'trend':
             if current_analysis:
                 long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
                 short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
@@ -337,7 +436,7 @@ class TelegramBot:
                 if current_analysis and prev_long_trend and prev_short_trend:
                     response += f"🔄 Karşılaştırma: Long trend {'değişmedi' if long_trend and long_trend.group(1) == prev_long_trend.group(1) else 'değişti'}, Short trend {'değişmedi' if short_trend and short_trend.group(1) == prev_short_trend.group(1) else 'değişti'}.\n"
 
-        if "long" in text:
+        elif matched_keyword == 'long':
             if current_analysis:
                 long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', current_analysis, re.DOTALL)
                 response += f"📈 Güncel Long Pozisyon:\n{long_match.group(1).strip() if long_match else 'Bilinmiyor'}\n"
@@ -350,7 +449,7 @@ class TelegramBot:
                     if curr_entry and prev_entry:
                         response += f"🔄 Karşılaştırma: Giriş fiyatı ${prev_entry.group(1)}’den ${curr_entry.group(1)}’e {'yükseldi' if float(curr_entry.group(1)) > float(prev_entry.group(1)) else 'düştü'}.\n"
 
-        if "short" in text:
+        elif matched_keyword == 'short':
             if current_analysis:
                 short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', current_analysis, re.DOTALL)
                 response += f"📉 Güncel Short Pozisyon:\n{short_match.group(1).strip() if short_match else 'Bilinmiyor'}\n"
@@ -363,7 +462,7 @@ class TelegramBot:
                     if curr_entry and prev_entry:
                         response += f"🔄 Karşılaştırma: Giriş fiyatı ${prev_entry.group(1)}’den ${curr_entry.group(1)}’e {'yükseldi' if float(curr_entry.group(1)) > float(prev_entry.group(1)) else 'düştü'}.\n"
 
-        if "destek" in text:
+        elif matched_keyword == 'destek':
             if current_analysis:
                 support_match = re.search(r'📍 Destek: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
                 response += f"📍 Güncel Destek: {support_match.group(1) if support_match else 'Bilinmiyor'}\n"
@@ -371,7 +470,7 @@ class TelegramBot:
                 support_levels = json.loads(previous_analysis['indicators'])['support_levels']
                 response += f"📅 Geçmiş Destek ({previous_analysis['timestamp']}): {', '.join([f'${x:.2f}' for x in support_levels])}\n"
 
-        if "direnç" in text:
+        elif matched_keyword == 'direnç':
             if current_analysis:
                 resistance_match = re.search(r'📍 Direnç: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
                 response += f"📍 Güncel Direnç: {resistance_match.group(1) if resistance_match else 'Bilinmiyor'}\n"
@@ -379,7 +478,7 @@ class TelegramBot:
                 resistance_levels = json.loads(previous_analysis['indicators'])['resistance_levels']
                 response += f"📅 Geçmiş Direnç ({previous_analysis['timestamp']}): {', '.join([f'${x:.2f}' for x in resistance_levels])}\n"
 
-        if "yorum" in text or "neden" in text:
+        elif matched_keyword in ['yorum', 'neden']:
             if current_analysis:
                 comment_match = re.search(r'💬 Yorum:(.*)', current_analysis, re.DOTALL)
                 response += f"💬 Güncel Yorum: {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
@@ -388,23 +487,19 @@ class TelegramBot:
                 response += f"📅 Geçmiş Yorum ({previous_analysis['timestamp']}): {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
 
         if not current_analysis and not previous_analysis:
-            response += f"❌ {symbol} için analiz bulunamadı. Yeni analiz yapmamı ister misiniz? (örn: /analyze_{symbol})"
+            response += f"❌ {symbol} için analiz bulunamadı. Yeni analiz yapmamı ister misiniz? (örn: {symbol} analiz)"
 
-        logger.info(f"Sending response for {symbol}: {response[:200]}...")
         await update.message.reply_text(response)
-        return ASKING_ANALYSIS
-
-    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Konuşmayı iptal eder."""
-        await update.message.reply_text("❌ Konuşma iptal edildi.")
-        return ConversationHandler.END
+        self.storage.save_conversation(chat_id, text, response)
 
     async def process_coin(self, symbol, chat_id):
         """Coin için analiz yapar."""
         try:
             data = await self.mexc.fetch_market_data(symbol)
             if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m']):
-                await self.app.bot.send_message(chat_id=chat_id, text=f"❌ {symbol} için veri yok.")
+                response = f"❌ {symbol} için veri yok."
+                await self.app.bot.send_message(chat_id=chat_id, text=response)
+                self.storage.save_conversation(chat_id, symbol, response)
                 return
             data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], symbol)
             deepseek = DeepSeekClient()
@@ -412,10 +507,13 @@ class TelegramBot:
             message = data['deepseek_analysis']['analysis_text']
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             self.storage.save_analysis(symbol, data)
+            self.storage.save_conversation(chat_id, symbol, message)
             return data
         except Exception as e:
             logger.error(f"Error processing coin {symbol}: {e}")
-            await self.app.bot.send_message(chat_id=chat_id, text=f"❌ {symbol} analizi sırasında hata: {str(e)}")
+            response = f"❌ {symbol} analizi sırasında hata: {str(e)}"
+            await self.app.bot.send_message(chat_id=chat_id, text=response)
+            self.storage.save_conversation(chat_id, symbol, response)
             return
 
     async def run(self):
