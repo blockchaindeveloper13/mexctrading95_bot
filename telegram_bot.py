@@ -37,11 +37,11 @@ class MEXCClient:
         async with aiohttp.ClientSession() as session:
             klines = {}
             for interval in ['5m', '15m', '60m']:
-                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
+                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=200"
                 async with session.get(url) as response:
                     response_data = await response.json() if response.status == 200 else []
                     klines[interval] = {'data': response_data}
-                    logger.info(f"Kline response for {symbol} ({interval}): {response_data[:1]}...")  # İlk satırı logla
+                    logger.info(f"Kline response for {symbol} ({interval}): {response_data[:1]}...")
                 await asyncio.sleep(0.5)
 
             order_book_url = f"{self.spot_url}/api/v3/depth?symbol={symbol}&limit=10"
@@ -67,7 +67,7 @@ class MEXCClient:
                 'klines': klines,
                 'order_book': order_book,
                 'price': float(ticker.get('price', 0.0)),
-                'funding_rate': 0.0,  # Spot'ta fonlama oranı yok, varsayılan 0
+                'funding_rate': 0.0,  # Spot'ta fonlama oranı yok
                 'price_change_24hr': float(ticker_24hr.get('priceChangePercent', 0.0)),
                 'btc_data': btc_data
             }
@@ -75,7 +75,7 @@ class MEXCClient:
     async def fetch_btc_data(self):
         """BTC/USDT spot verilerini çeker."""
         async with aiohttp.ClientSession() as session:
-            url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100"
+            url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=200"
             async with session.get(url) as response:
                 response_data = await response.json() if response.status == 200 else []
                 logger.info(f"BTC data response: {response_data[:1]}...")
@@ -234,51 +234,96 @@ class Storage:
             ))
             conn.commit()
 
-def calculate_indicators(kline_data, order_book, btc_data):
+def calculate_indicators(kline_data, order_book, btc_data, symbol):
     """Teknik göstergeleri hesaplar."""
     indicators = {}
     for interval in ['5m', '15m', '60m']:
         kline = kline_data.get(interval, {}).get('data', [])
         if kline and len(kline) > 1:
-            df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-            df['close'] = df['close'].astype(float)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
-            df['volume'] = df['volume'].astype(float)
+            try:
+                df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume', 'ignore'])
+                df['close'] = df['close'].astype(float)
+                df['high'] = df['high'].astype(float)
+                df['low'] = df['low'].astype(float)
+                df['volume'] = df['volume'].astype(float)
 
-            indicators[f'ma_{interval}'] = {
-                'ma50': ta.sma(df['close'], length=50).iloc[-1] if not ta.sma(df['close'], length=50).empty else 0.0,
-                'ma200': ta.sma(df['close'], length=200).iloc[-1] if not ta.sma(df['close'], length=200).empty else 0.0
-            }
-            indicators[f'ema_{interval}'] = {
-                'ema12': ta.ema(df['close'], length=12).iloc[-1] if not ta.ema(df['close'], length=12).empty else 0.0,
-                'ema26': ta.ema(df['close'], length=26).iloc[-1] if not ta.ema(df['close'], length=26).empty else 0.0
-            }
-            indicators[f'sar_{interval}'] = ta.psar(df['high'], df['low'], df['close']).iloc[-1]['PSARl_0.02_0.2'] if not ta.psar(df['high'], df['low'], df['close']).empty else 0.0
-            bb = ta.bbands(df['close'], length=20, std=2)
-            indicators[f'bb_{interval}'] = {
-                'upper': bb['BBU_20_2.0'].iloc[-1] if not bb.empty else 0.0,
-                'lower': bb['BBL_20_2.0'].iloc[-1] if not bb.empty else 0.0
-            }
-            indicators[f'macd_{interval}'] = ta.macd(df['close'], fast=12, slow=26, signal=9)['MACD_12_26_9'].iloc[-1] if not ta.macd(df['close']).empty else 0.0
-            indicators[f'kdj_{interval}'] = ta.kdj(df['high'], df['low'], df['close'], length=9)['K_9_3'].iloc[-1] if not ta.kdj(df['high'], df['low'], df['close']).empty else 0.0
-            indicators[f'rsi_{interval}'] = ta.rsi(df['close'], length=14).iloc[-1] if not ta.rsi(df['close']).empty else 0.0
-            indicators[f'stochrsi_{interval}'] = ta.stochrsi(df['close'], length=14)['STOCHRSIk_14_14_3_3'].iloc[-1] if not ta.stochrsi(df['close']).empty else 0.0
-            indicators[f'atr_{interval}'] = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1] / df['close'].iloc[-1] * 100 if not ta.atr(df['high'], df['low'], df['close']).empty else 0.0
+                # MA50 ve MA200 için veri uzunluğu kontrolü
+                sma_50 = ta.sma(df['close'], length=50) if len(df) >= 50 else None
+                sma_200 = ta.sma(df['close'], length=200) if len(df) >= 200 else None
+                indicators[f'ma_{interval}'] = {
+                    'ma50': sma_50.iloc[-1] if sma_50 is not None and not sma_50.empty else 0.0,
+                    'ma200': sma_200.iloc[-1] if sma_200 is not None and not sma_200.empty else 0.0
+                }
 
-            pivot = ta.pivot(df['high'], df['low'], df['close'])
-            fib = ta.fibonacci(df['high'], df['low'])
-            indicators['support_levels'] = [
-                pivot['pivot'].iloc[-1] if not pivot.empty else df['close'].iloc[-1] * 0.95,
-                fib['FIBL_0.236'].iloc[-1] if not fib.empty else df['close'].iloc[-1] * 0.90,
-                fib['FIBL_0.382'].iloc[-1] if not fib.empty else df['close'].iloc[-1] * 0.85
-            ]
-            indicators['resistance_levels'] = [
-                pivot['R1'].iloc[-1] if not pivot.empty else df['close'].iloc[-1] * 1.05,
-                fib['FIBU_0.236'].iloc[-1] if not fib.empty else df['close'].iloc[-1] * 1.10,
-                fib['FIBU_0.382'].iloc[-1] if not fib.empty else df['close'].iloc[-1] * 1.15
-            ]
+                # EMA12 ve EMA26
+                ema_12 = ta.ema(df['close'], length=12) if len(df) >= 12 else None
+                ema_26 = ta.ema(df['close'], length=26) if len(df) >= 26 else None
+                indicators[f'ema_{interval}'] = {
+                    'ema12': ema_12.iloc[-1] if ema_12 is not None and not ema_12.empty else 0.0,
+                    'ema26': ema_26.iloc[-1] if ema_26 is not None and not ema_26.empty else 0.0
+                }
+
+                # SAR
+                sar = ta.psar(df['high'], df['low'], df['close']) if len(df) >= 14 else None
+                indicators[f'sar_{interval}'] = sar['PSARl_0.02_0.2'].iloc[-1] if sar is not None and not sar.empty else 0.0
+
+                # Bollinger Bands
+                bb = ta.bbands(df['close'], length=20, std=2) if len(df) >= 20 else None
+                indicators[f'bb_{interval}'] = {
+                    'upper': bb['BBU_20_2.0'].iloc[-1] if bb is not None and not bb.empty else 0.0,
+                    'lower': bb['BBL_20_2.0'].iloc[-1] if bb is not None and not bb.empty else 0.0
+                }
+
+                # MACD
+                macd = ta.macd(df['close'], fast=12, slow=26, signal=9) if len(df) >= 26 else None
+                indicators[f'macd_{interval}'] = macd['MACD_12_26_9'].iloc[-1] if macd is not None and not macd.empty else 0.0
+
+                # KDJ
+                kdj = ta.kdj(df['high'], df['low'], df['close'], length=9) if len(df) >= 9 else None
+                indicators[f'kdj_{interval}'] = kdj['K_9_3'].iloc[-1] if kdj is not None and not kdj.empty else 0.0
+
+                # RSI
+                rsi = ta.rsi(df['close'], length=14) if len(df) >= 14 else None
+                indicators[f'rsi_{interval}'] = rsi.iloc[-1] if rsi is not None and not rsi.empty else 0.0
+
+                # StochRSI
+                stochrsi = ta.stochrsi(df['close'], length=14) if len(df) >= 14 else None
+                indicators[f'stochrsi_{interval}'] = stochrsi['STOCHRSIk_14_14_3_3'].iloc[-1] if stochrsi is not None and not stochrsi.empty else 0.0
+
+                # ATR
+                atr = ta.atr(df['high'], df['low'], df['close'], length=14) if len(df) >= 14 else None
+                indicators[f'atr_{interval}'] = (atr.iloc[-1] / df['close'].iloc[-1] * 100) if atr is not None and not atr.empty else 0.0
+
+                # Destek ve Direnç
+                pivot = ta.pivot(df['high'], df['low'], df['close']) if len(df) >= 2 else None
+                fib = ta.fibonacci(df['high'], df['low']) if len(df) >= 2 else None
+                indicators['support_levels'] = [
+                    pivot['pivot'].iloc[-1] if pivot is not None and not pivot.empty else df['close'].iloc[-1] * 0.95,
+                    fib['FIBL_0.236'].iloc[-1] if fib is not None and not fib.empty else df['close'].iloc[-1] * 0.90,
+                    fib['FIBL_0.382'].iloc[-1] if fib is not None and not fib.empty else df['close'].iloc[-1] * 0.85
+                ]
+                indicators['resistance_levels'] = [
+                    pivot['R1'].iloc[-1] if pivot is not None and not pivot.empty else df['close'].iloc[-1] * 1.05,
+                    fib['FIBU_0.236'].iloc[-1] if fib is not None and not fib.empty else df['close'].iloc[-1] * 1.10,
+                    fib['FIBU_0.382'].iloc[-1] if fib is not None and not fib.empty else df['close'].iloc[-1] * 1.15
+                ]
+            except Exception as e:
+                logger.error(f"Error calculating indicators for {symbol} ({interval}): {e}")
+                indicators.update({
+                    f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
+                    f'ema_{interval}': {'ema12': 0.0, 'ema26': 0.0},
+                    f'sar_{interval}': 0.0,
+                    f'bb_{interval}': {'upper': 0.0, 'lower': 0.0},
+                    f'macd_{interval}': 0.0,
+                    f'kdj_{interval}': 0.0,
+                    f'rsi_{interval}': 0.0,
+                    f'stochrsi_{interval}': 0.0,
+                    f'atr_{interval}': 0.0,
+                    'support_levels': [0.0, 0.0, 0.0],
+                    'resistance_levels': [0.0, 0.0, 0.0]
+                })
         else:
+            logger.warning(f"No kline data for {symbol} ({interval})")
             indicators.update({
                 f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
                 f'ema_{interval}': {'ema12': 0.0, 'ema26': 0.0},
@@ -302,10 +347,10 @@ def calculate_indicators(kline_data, order_book, btc_data):
         logger.warning(f"Order book for {symbol} has no bids or asks")
 
     if btc_data.get('data') and len(btc_data['data']) > 1:
-        btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume', 'ignore'])
         btc_df['close'] = btc_df['close'].astype(float)
         if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
-            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume', 'ignore'])
             coin_df['close'] = coin_df['close'].astype(float)
             correlation = coin_df['close'].corr(btc_df['close'])
             indicators['btc_correlation'] = correlation if not np.isnan(correlation) else 0.0
@@ -387,7 +432,7 @@ class TelegramBot:
             await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için veri yok.")
             return None
 
-        data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'])
+        data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], symbol)
         deepseek = DeepSeekClient()
         data['deepseek_analysis'] = deepseek.analyze_coin(symbol, data)
         message = self.format_results(data, symbol)
