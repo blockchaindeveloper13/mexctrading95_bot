@@ -37,10 +37,14 @@ class MEXCClient:
         self.spot_url = "https://api.mexc.com"
         self.session = None
 
+    async def initialize(self):
+        """Session’ı başlatır."""
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+
     async def fetch_market_data(self, symbol):
         """Spot piyasası verisi çeker."""
-        if self.session is None:
-            self.session = aiohttp.ClientSession()
+        await self.initialize()
         async with self.session:
             klines = {}
             for interval in ['5m', '15m', '60m']:
@@ -81,8 +85,7 @@ class MEXCClient:
 
     async def fetch_btc_data(self):
         """BTC/USDT spot verilerini çeker."""
-        if self.session is None:
-            self.session = aiohttp.ClientSession()
+        await self.initialize()
         async with self.session:
             url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=200"
             async with self.session.get(url) as response:
@@ -92,8 +95,7 @@ class MEXCClient:
 
     async def validate_symbol(self, symbol):
         """Sembolü spot piyasasında doğrular."""
-        if self.session is None:
-            self.session = aiohttp.ClientSession()
+        await self.initialize()
         async with self.session:
             url = f"{self.spot_url}/api/v3/ticker/price?symbol={symbol}"
             async with self.session.get(url) as response:
@@ -103,7 +105,7 @@ class MEXCClient:
 
     async def close(self):
         """Session’ı kapatır."""
-        if self.session:
+        if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
 
@@ -188,7 +190,6 @@ class Storage:
     def __init__(self):
         self.db_path = "analysis.db"
         self.init_db()
-        self.conn = None
 
     def init_db(self):
         """SQLite veritabanını başlatır."""
@@ -254,111 +255,25 @@ class Storage:
             logger.error(f"SQLite error while fetching latest analysis for {symbol}: {e}")
             return None
 
-    def close(self):
-        """Veritabanı bağlantısını kapatır."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-
-def calculate_indicators(kline_data, order_book, btc_data, symbol):
-    """Teknik göstergeleri hesaplar."""
-    indicators = {}
-    for interval in ['5m', '15m', '60m']:
-        kline = kline_data.get(interval, {}).get('data', [])
-        if kline and len(kline) > 1:
-            try:
-                df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-                df['close'] = df['close'].astype(float)
-                df['high'] = df['high'].astype(float)
-                df['low'] = df['low'].astype(float)
-                df['volume'] = df['volume'].astype(float)
-
-                sma_50 = ta.sma(df['close'], length=50) if len(df) >= 50 else None
-                sma_200 = ta.sma(df['close'], length=200) if len(df) >= 200 else None
-                indicators[f'ma_{interval}'] = {
-                    'ma50': sma_50.iloc[-1] if sma_50 is not None and not sma_50.empty else 0.0,
-                    'ma200': sma_200.iloc[-1] if sma_200 is not None and not sma_200.empty else 0.0
-                }
-
-                rsi = ta.rsi(df['close'], length=14) if len(df) >= 14 else None
-                indicators[f'rsi_{interval}'] = rsi.iloc[-1] if rsi is not None and not rsi.empty else 0.0
-
-                atr = ta.atr(df['high'], df['low'], df['close'], length=14) if len(df) >= 14 else None
-                indicators[f'atr_{interval}'] = (atr.iloc[-1] / df['close'].iloc[-1] * 100) if atr is not None and not atr.empty else 0.0
-
-                last_row = df.iloc[-1]
-                pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
-                range_high_low = last_row['high'] - last_row['low']
-                indicators['support_levels'] = [
-                    pivot - range_high_low * 0.5,
-                    pivot - range_high_low * 0.618,
-                    pivot - range_high_low
-                ]
-                indicators['resistance_levels'] = [
-                    pivot + range_high_low * 0.5,
-                    pivot + range_high_low * 0.618,
-                    pivot + range_high_low
-                ]
-            except Exception as e:
-                logger.error(f"Error calculating indicators for {symbol} ({interval}): {e}")
-                indicators.update({
-                    f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
-                    f'rsi_{interval}': 0.0,
-                    f'atr_{interval}': 0.0,
-                    'support_levels': [0.0, 0.0, 0.0],
-                    'resistance_levels': [0.0, 0.0, 0.0]
-                })
-        else:
-            logger.warning(f"No kline data for {symbol} ({interval})")
-            indicators.update({
-                f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
-                f'rsi_{interval}': 0.0,
-                f'atr_{interval}': 0.0,
-                'support_levels': [0.0, 0.0, 0.0],
-                'resistance_levels': [0.0, 0.0, 0.0]
-            })
-
-    if order_book.get('bids') and order_book.get('asks'):
-        bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
-        ask_volume = sum(float(ask[1]) for ask in order_book['asks'])
-        indicators['bid_ask_ratio'] = bid_volume / ask_volume if ask_volume > 0 else 0.0
-    else:
-        indicators['bid_ask_ratio'] = 0.0
-        logger.warning(f"Order book for {symbol} has no bids or asks")
-
-    if btc_data.get('data') and len(btc_data['data']) > 1:
-        btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-        btc_df['close'] = btc_df['close'].astype(float)
-        if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
-            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-            coin_df['close'] = coin_df['close'].astype(float)
-            correlation = coin_df['close'].corr(btc_df['close'])
-            indicators['btc_correlation'] = correlation if not np.isnan(correlation) else 0.0
-        else:
-            indicators['btc_correlation'] = 0.0
-    else:
-        indicators['btc_correlation'] = 0.0
-
-    return indicators
-
 class TelegramBot:
     """Telegram botu."""
     def __init__(self):
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
         self.storage = Storage()
+        self.mexc = MEXCClient()
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.app = Application.builder().token(bot_token).build()
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CallbackQueryHandler(self.button))
         self.app.add_handler(ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex(r'(?i)\b(analiz|trend|long|short|destek|direnç|yorum|neden)\b.*\b(' + '|'.join(COINS) + r')\b'), self.handle_analysis_query)],
+            entry_points=[MessageHandler(filters.Regex(r'(?i)(analiz|trend|long|short|destek|direnç|yorum|neden).*\b(' + '|'.join(COINS) + r')\b'), self.handle_analysis_query)],
             states={
                 ASKING_ANALYSIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_analysis_query)]
             },
             fallbacks=[CommandHandler("cancel", self.cancel)]
         ))
         self.active_analyses = {}
-        self.mexc = MEXCClient()
+        self.shutdown_event = asyncio.Event()
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Coin butonlarını gösterir."""
@@ -378,13 +293,16 @@ class TelegramBot:
             await query.message.reply_text(f"⏳ {symbol} için analiz yapılıyor, bekleyin.")
             return
         self.active_analyses[analysis_key] = True
-        if not await self.mexc.validate_symbol(symbol):
-            await query.message.reply_text(f"❌ Hata: {symbol} spot piyasasında mevcut değil.")
+        try:
+            if not await self.mexc.validate_symbol(symbol):
+                await query.message.reply_text(f"❌ Hata: {symbol} spot piyasasında mevcut değil.")
+                return
+            await query.message.reply_text(f"🔍 {symbol} için vadeli işlem analizi yapılıyor...")
+            task = self.process_coin(symbol, update.effective_chat.id)
+            if task is not None:
+                asyncio.create_task(task)
+        finally:
             del self.active_analyses[analysis_key]
-            return
-        await query.message.reply_text(f"🔍 {symbol} için vadeli işlem analizi yapılıyor...")
-        asyncio.create_task(self.process_coin(symbol, update.effective_chat.id))
-        del self.active_analyses[analysis_key]
 
     async def handle_analysis_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Analizle ilgili soruları yanıtlar."""
@@ -470,7 +388,7 @@ class TelegramBot:
                 response += f"📅 Geçmiş Yorum ({previous_analysis['timestamp']}): {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
 
         if not current_analysis and not previous_analysis:
-            response += f"❌ {symbol} için analiz bulunamadı. Yeni analiz yapmamı ister misiniz?"
+            response += f"❌ {symbol} için analiz bulunamadı. Yeni analiz yapmamı ister misiniz? (örn: /analyze_{symbol})"
 
         logger.info(f"Sending response for {symbol}: {response[:200]}...")
         await update.message.reply_text(response)
@@ -487,8 +405,7 @@ class TelegramBot:
             data = await self.mexc.fetch_market_data(symbol)
             if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m']):
                 await self.app.bot.send_message(chat_id=chat_id, text=f"❌ {symbol} için veri yok.")
-                return None
-
+                return
             data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], symbol)
             deepseek = DeepSeekClient()
             data['deepseek_analysis'] = await deepseek.analyze_coin(symbol, data)
@@ -499,12 +416,13 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Error processing coin {symbol}: {e}")
             await self.app.bot.send_message(chat_id=chat_id, text=f"❌ {symbol} analizi sırasında hata: {str(e)}")
-            return None
+            return
 
     async def run(self):
         """Webhook sunucusunu başlatır."""
         try:
             logger.info("Starting application...")
+            await self.mexc.initialize()
             await self.app.initialize()
             await self.app.start()
             web_app = web.Application()
@@ -516,14 +434,12 @@ class TelegramBot:
             site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
             await site.start()
             logger.info("Application started successfully")
-            while True:
-                await asyncio.sleep(3600)  # 1 saatlik döngü
+            await self.shutdown_event.wait()
         except Exception as e:
             logger.error(f"Error starting application: {e}")
         finally:
             logger.info("Shutting down application...")
             await self.mexc.close()
-            self.storage.close()
             await self.app.stop()
             await self.app.shutdown()
             logger.info("Application shut down")
@@ -540,13 +456,94 @@ class TelegramBot:
             logger.error(f"Error handling webhook: {e}")
             return web.Response(text="Error", status=500)
 
+def calculate_indicators(kline_data, order_book, btc_data, symbol):
+    """Teknik göstergeleri hesaplar."""
+    indicators = {}
+    for interval in ['5m', '15m', '60m']:
+        kline = kline_data.get(interval, {}).get('data', [])
+        if kline and len(kline) > 1:
+            try:
+                df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+                df['close'] = df['close'].astype(float)
+                df['high'] = df['high'].astype(float)
+                df['low'] = df['low'].astype(float)
+                df['volume'] = df['volume'].astype(float)
+
+                sma_50 = ta.sma(df['close'], length=50) if len(df) >= 50 else None
+                sma_200 = ta.sma(df['close'], length=200) if len(df) >= 200 else None
+                indicators[f'ma_{interval}'] = {
+                    'ma50': sma_50.iloc[-1] if sma_50 is not None and not sma_50.empty else 0.0,
+                    'ma200': sma_200.iloc[-1] if sma_200 is not None and not sma_200.empty else 0.0
+                }
+
+                rsi = ta.rsi(df['close'], length=14) if len(df) >= 14 else None
+                indicators[f'rsi_{interval}'] = rsi.iloc[-1] if rsi is not None and not rsi.empty else 0.0
+
+                atr = ta.atr(df['high'], df['low'], df['close'], length=14) if len(df) >= 14 else None
+                indicators[f'atr_{interval}'] = (atr.iloc[-1] / df['close'].iloc[-1] * 100) if atr is not None and not atr.empty else 0.0
+
+                last_row = df.iloc[-1]
+                pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
+                range_high_low = last_row['high'] - last_row['low']
+                indicators['support_levels'] = [
+                    pivot - range_high_low * 0.5,
+                    pivot - range_high_low * 0.618,
+                    pivot - range_high_low
+                ]
+                indicators['resistance_levels'] = [
+                    pivot + range_high_low * 0.5,
+                    pivot + range_high_low * 0.618,
+                    pivot + range_high_low
+                ]
+            except Exception as e:
+                logger.error(f"Error calculating indicators for {symbol} ({interval}): {e}")
+                indicators.update({
+                    f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
+                    f'rsi_{interval}': 0.0,
+                    f'atr_{interval}': 0.0,
+                    'support_levels': [0.0, 0.0, 0.0],
+                    'resistance_levels': [0.0, 0.0, 0.0]
+                })
+        else:
+            logger.warning(f"No kline data for {symbol} ({interval})")
+            indicators.update({
+                f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
+                f'rsi_{interval}': 0.0,
+                f'atr_{interval}': 0.0,
+                'support_levels': [0.0, 0.0, 0.0],
+                'resistance_levels': [0.0, 0.0, 0.0]
+            })
+
+    if order_book.get('bids') and order_book.get('asks'):
+        bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
+        ask_volume = sum(float(ask[1]) for ask in order_book['asks'])
+        indicators['bid_ask_ratio'] = bid_volume / ask_volume if ask_volume > 0 else 0.0
+    else:
+        indicators['bid_ask_ratio'] = 0.0
+        logger.warning(f"Order book for {symbol} has no bids or asks")
+
+    if btc_data.get('data') and len(btc_data['data']) > 1:
+        btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+        btc_df['close'] = btc_df['close'].astype(float)
+        if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
+            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+            coin_df['close'] = coin_df['close'].astype(float)
+            correlation = coin_df['close'].corr(btc_df['close'])
+            indicators['btc_correlation'] = correlation if not np.isnan(correlation) else 0.0
+        else:
+            indicators['btc_correlation'] = 0.0
+    else:
+        indicators['btc_correlation'] = 0.0
+
+    return indicators
+
 def main():
     bot = TelegramBot()
 
     def handle_sigterm(*args):
         logger.info("Received SIGTERM, shutting down...")
+        bot.shutdown_event.set()
         asyncio.create_task(bot.mexc.close())
-        asyncio.create_task(bot.storage.close())
         asyncio.create_task(bot.app.stop())
         asyncio.create_task(bot.app.shutdown())
 
