@@ -4,6 +4,7 @@ import pandas_ta as ta
 import logging
 import asyncio
 import aiohttp
+import signal
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 from openai import AsyncOpenAI
@@ -103,7 +104,7 @@ class DeepSeekClient:
         support_levels = data['indicators'].get('support_levels', [0.0, 0.0, 0.0])
         resistance_levels = data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit (çıkış), stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Her alan için tam bir sayı veya metin döndür.
+        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit (çıkış), stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Her alan için tam bir sayı veya metin zorunlu.
 
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
@@ -116,6 +117,8 @@ class DeepSeekClient:
         - Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
 
         Çıktı formatı:
+        📊 {symbol} Vadeli Analiz ({datetime.now().strftime('%Y-%m-%d %H:%M')})
+        🔄 Zaman Dilimleri: 5m, 15m, 1h
         📈 Long Pozisyon:
         - Giriş: $X
         - Take-Profit: $Y
@@ -130,6 +133,10 @@ class DeepSeekClient:
         - Kaldıraç: Nx
         - Risk/Ödül: A:B
         - Trend: [Yükseliş/Düşüş/Nötr]
+        📍 Destek: {', '.join([f'${x:.2f}' for x in support_levels])}
+        📍 Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
+        ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
+        🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
         💬 Yorum: [Analiz süreci, hangi göstergelere dayandığı, giriş/take-profit/stop-loss seçim gerekçesi]
         """
         try:
@@ -159,7 +166,6 @@ class DeepSeekClient:
             if missing_fields:
                 raise ValueError(f"DeepSeek yanıtı eksik: {', '.join(missing_fields)}")
 
-            # Yanıtı doğrudan döndür
             return {'analysis_text': analysis_text}
         except (asyncio.TimeoutError, ValueError, Exception) as e:
             logger.error(f"DeepSeek API error for {symbol}: {e}")
@@ -316,7 +322,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CallbackQueryHandler(self.button))
         self.app.add_handler(ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex(r'(?i)analiz|trend|long|short|destek|direnç'), self.handle_analysis_query)],
+            entry_points=[MessageHandler(filters.Regex(r'(?i)\b(?:analiz|trend|long|short|destek|direnç|yorum|neden)\b.*\b(?:' + '|'.join(COINS) + r')\b', re.IGNORECASE), self.handle_analysis_query)],
             states={
                 ASKING_ANALYSIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_analysis_query)]
             },
@@ -363,33 +369,85 @@ class TelegramBot:
             await update.message.reply_text("🔍 Lütfen geçerli bir coin sembolü belirtin (örn: ADAUSDT).")
             return ASKING_ANALYSIS
 
-        analysis = self.storage.get_previous_analysis(symbol)
-        if not analysis:
-            await update.message.reply_text(f"❌ {symbol} için önceki analiz bulunamadı. Yeni analiz yapmamı ister misiniz?")
-            return ASKING_ANALYSIS
+        # Güncel analiz için son mesajı kontrol et
+        current_analysis = None
+        messages = await context.bot.get_chat_history(update.effective_chat.id, limit=10)
+        for msg in messages:
+            if msg.text and symbol in msg.text and "Vadeli Analiz" in msg.text:
+                current_analysis = msg.text
+                break
 
-        response = f"📊 {symbol} için en son analiz ({analysis['timestamp']}):\n"
-        analysis_text = analysis['analysis_text']
+        # Geçmiş analiz
+        previous_analysis = self.storage.get_previous_analysis(symbol)
+        response = f"📊 {symbol} için analiz:\n"
+
         if "trend" in text:
-            long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', analysis_text, re.DOTALL)
-            short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', analysis_text, re.DOTALL)
-            response += f"📈 Long Trend: {long_trend.group(1) if long_trend else 'Bilinmiyor'}\n"
-            response += f"📉 Short Trend: {short_trend.group(1) if short_trend else 'Bilinmiyor'}\n"
+            if current_analysis:
+                long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                response += f"📈 Güncel Long Trend: {long_trend.group(1) if long_trend else 'Bilinmiyor'}\n"
+                response += f"📉 Güncel Short Trend: {short_trend.group(1) if short_trend else 'Bilinmiyor'}\n"
+            if previous_analysis:
+                prev_long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', previous_analysis['analysis_text'], re.DOTALL)
+                prev_short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', previous_analysis['analysis_text'], re.DOTALL)
+                response += f"📅 Geçmiş ({previous_analysis['timestamp']}):\n"
+                response += f"📈 Geçmiş Long Trend: {prev_long_trend.group(1) if prev_long_trend else 'Bilinmiyor'}\n"
+                response += f"📉 Geçmiş Short Trend: {prev_short_trend.group(1) if prev_short_trend else 'Bilinmiyor'}\n"
+                if current_analysis and prev_long_trend and prev_short_trend:
+                    response += f"🔄 Karşılaştırma: Long trend {'değişmedi' if long_trend and long_trend.group(1) == prev_long_trend.group(1) else 'değişti'}, Short trend {'değişmedi' if short_trend and short_trend.group(1) == prev_short_trend.group(1) else 'değişti'}.\n"
+
         if "long" in text:
-            long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', analysis_text, re.DOTALL)
-            response += f"📈 Long Pozisyon:\n{long_match.group(1).strip() if long_match else 'Bilinmiyor'}\n"
+            if current_analysis:
+                long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', current_analysis, re.DOTALL)
+                response += f"📈 Güncel Long Pozisyon:\n{long_match.group(1).strip() if long_match else 'Bilinmiyor'}\n"
+            if previous_analysis:
+                prev_long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', previous_analysis['analysis_text'], re.DOTALL)
+                response += f"📅 Geçmiş Long Pozisyon ({previous_analysis['timestamp']}):\n{prev_long_match.group(1).strip() if prev_long_match else 'Bilinmiyor'}\n"
+                if current_analysis and prev_long_match:
+                    curr_entry = re.search(r'Giriş: \$([\d.]+)', long_match.group(1)) if long_match else None
+                    prev_entry = re.search(r'Giriş: \$([\d.]+)', prev_long_match.group(1)) if prev_long_match else None
+                    if curr_entry and prev_entry:
+                        response += f"🔄 Karşılaştırma: Giriş fiyatı ${prev_entry.group(1)}’den ${curr_entry.group(1)}’e {'yükseldi' if float(curr_entry.group(1)) > float(prev_entry.group(1)) else 'düştü'}.\n"
+
         if "short" in text:
-            short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', analysis_text, re.DOTALL)
-            response += f"📉 Short Pozisyon:\n{short_match.group(1).strip() if short_match else 'Bilinmiyor'}\n"
+            if current_analysis:
+                short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', current_analysis, re.DOTALL)
+                response += f"📉 Güncel Short Pozisyon:\n{short_match.group(1).strip() if short_match else 'Bilinmiyor'}\n"
+            if previous_analysis:
+                prev_short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', previous_analysis['analysis_text'], re.DOTALL)
+                response += f"📅 Geçmiş Short Pozisyon ({previous_analysis['timestamp']}):\n{prev_short_match.group(1).strip() if prev_short_match else 'Bilinmiyor'}\n"
+                if current_analysis and prev_short_match:
+                    curr_entry = re.search(r'Giriş: \$([\d.]+)', short_match.group(1)) if short_match else None
+                    prev_entry = re.search(r'Giriş: \$([\d.]+)', prev_short_match.group(1)) if prev_short_match else None
+                    if curr_entry and prev_entry:
+                        response += f"🔄 Karşılaştırma: Giriş fiyatı ${prev_entry.group(1)}’den ${curr_entry.group(1)}’e {'yükseldi' if float(curr_entry.group(1)) > float(prev_entry.group(1)) else 'düştü'}.\n"
+
         if "destek" in text:
-            support_levels = json.loads(analysis['indicators'])['support_levels']
-            response += f"📍 Destek: {', '.join([f'${x:.2f}' for x in support_levels])}\n"
+            if current_analysis:
+                support_match = re.search(r'📍 Destek: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                response += f"📍 Güncel Destek: {support_match.group(1) if support_match else 'Bilinmiyor'}\n"
+            if previous_analysis:
+                support_levels = json.loads(previous_analysis['indicators'])['support_levels']
+                response += f"📅 Geçmiş Destek ({previous_analysis['timestamp']}): {', '.join([f'${x:.2f}' for x in support_levels])}\n"
+
         if "direnç" in text:
-            resistance_levels = json.loads(analysis['indicators'])['resistance_levels']
-            response += f"📍 Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}\n"
+            if current_analysis:
+                resistance_match = re.search(r'📍 Direnç: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                response += f"📍 Güncel Direnç: {resistance_match.group(1) if resistance_match else 'Bilinmiyor'}\n"
+            if previous_analysis:
+                resistance_levels = json.loads(previous_analysis['indicators'])['resistance_levels']
+                response += f"📅 Geçmiş Direnç ({previous_analysis['timestamp']}): {', '.join([f'${x:.2f}' for x in resistance_levels])}\n"
+
         if "yorum" in text or "neden" in text:
-            comment_match = re.search(r'💬 Yorum:(.*)', analysis_text, re.DOTALL)
-            response += f"💬 Yorum: {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
+            if current_analysis:
+                comment_match = re.search(r'💬 Yorum:(.*)', current_analysis, re.DOTALL)
+                response += f"💬 Güncel Yorum: {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
+            if previous_analysis:
+                comment_match = re.search(r'💬 Yorum:(.*)', previous_analysis['analysis_text'], re.DOTALL)
+                response += f"📅 Geçmiş Yorum ({previous_analysis['timestamp']}): {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
+
+        if not current_analysis and not previous_analysis:
+            response += f"❌ {symbol} için analiz bulunamadı. Yeni analiz yapmamı ister misiniz?"
 
         await update.message.reply_text(response)
         return ASKING_ANALYSIS
@@ -421,28 +479,49 @@ class TelegramBot:
 
     async def run(self):
         """Webhook sunucusunu başlatır."""
-        await self.app.initialize()
-        await self.app.start()
-        web_app = web.Application()
-        web_app.router.add_post('/webhook', self.webhook_handler)
-        webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
-        await self.app.bot.set_webhook(url=webhook_url)
-        runner = web.AppRunner(web_app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
-        await site.start()
-        await asyncio.Event().wait()
+        try:
+            logger.info("Starting application...")
+            await self.app.initialize()
+            await self.app.start()
+            web_app = web.Application()
+            web_app.router.add_post('/webhook', self.webhook_handler)
+            webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
+            await self.app.bot.set_webhook(url=webhook_url)
+            runner = web.AppRunner(web_app)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
+            await site.start()
+            logger.info("Application started successfully")
+            await asyncio.Event().wait()
+        except Exception as e:
+            logger.error(f"Error starting application: {e}")
+        finally:
+            logger.info("Shutting down application...")
+            await self.app.stop()
+            await self.app.shutdown()
+            logger.info("Application shut down")
 
     async def webhook_handler(self, request):
         """Webhook isteklerini işler."""
-        raw_data = await request.json()
-        update = Update.de_json(raw_data, self.app.bot)
-        if update:
-            await self.app.process_update(update)
-        return web.Response(text="OK")
+        try:
+            raw_data = await request.json()
+            update = Update.de_json(raw_data, self.app.bot)
+            if update:
+                await self.app.process_update(update)
+            return web.Response(text="OK")
+        except Exception as e:
+            logger.error(f"Error handling webhook: {e}")
+            return web.Response(text="Error", status=500)
 
 def main():
     bot = TelegramBot()
+
+    def handle_sigterm(*args):
+        logger.info("Received SIGTERM, shutting down...")
+        asyncio.create_task(bot.app.stop())
+        asyncio.create_task(bot.app.shutdown())
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
     asyncio.run(bot.run())
 
 if __name__ == "__main__":
