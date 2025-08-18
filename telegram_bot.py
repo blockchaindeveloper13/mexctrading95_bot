@@ -157,35 +157,20 @@ class DeepSeekClient:
 
             Grup konuşmalarındaki sorulara veya yorumlara yanıt ver. Yanıtın akıcı, profesyonel ve en az 500 karakter olsun. Sabit ifadelerden uzak dur, yaratıcı ol.
             """
-            try:
-                response = self.client.chat.completions.create(
-                    model="deepseek-reasoner",  # Doğru model adı
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=5000,
-                    stream=False
-                )
-                analysis_text = response.choices[0].message.content
-                logger.info(f"DeepSeek ham yanıtı ({symbol}): {analysis_text}")
-                if len(analysis_text) < 500:
-                    logger.warning(f"DeepSeek yanıtı ({symbol}) 500 karakterden kısa: {len(analysis_text)} karakter")
-                    analysis_text += " " * (500 - len(analysis_text))
-                return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
-            except Exception as e:
-                logger.warning(f"{symbol} için deepseek-reasoner başarısız, deepseek-chat deneniyor: {str(e)}")
-                response = self.client.chat.completions.create(
-                    model="deepseek-chat",  # Fallback model
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=5000,
-                    stream=False
-                )
-                analysis_text = response.choices[0].message.content
-                logger.info(f"DeepSeek ham yanıtı ({symbol}, fallback): {analysis_text}")
-                if len(analysis_text) < 500:
-                    logger.warning(f"DeepSeek yanıtı ({symbol}, fallback) 500 karakterden kısa: {len(analysis_text)} karakter")
-                    analysis_text += " " * (500 - len(analysis_text))
-                return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
+            response = self.client.chat.completions.create(
+                model="deepseek-chat",  # Ana model olarak deepseek-chat
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=5000,
+                stream=False
+            )
+            analysis_text = response.choices[0].message.content
+            logger.info(f"DeepSeek ham yanıtı ({symbol}): {analysis_text}")
+            if len(analysis_text) < 500:
+                logger.warning(f"DeepSeek yanıtı ({symbol}) 500 karakterden kısa: {len(analysis_text)} karakter")
+                analysis_text += " " * (500 - len(analysis_text))
+            return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
         except Exception as e:
-            logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {str(e)}")
+            logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {str(e)} - Full response: {e.response.text if hasattr(e, 'response') else 'No response'}")
             return {
                 'short_term': {
                     'entry_price': data['price'],
@@ -499,6 +484,7 @@ class TelegramBot:
             self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
             self.web_app = None
             self.active_analyses = {}
+            self.last_messages = {}  # Tekrarlayan mesajları kontrol etmek için
             if self.app.job_queue:
                 self.app.job_queue.start()
                 logger.info("Job queue başlatıldı")
@@ -609,76 +595,56 @@ class TelegramBot:
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Genel mesajlara yanıt verir ve konuşmaları kaydeder."""
-        message_text = update.message.text
-        logger.info(f"Mesaj alındı: {message_text}")
+        message_text = update.message.text.lower().strip()
+        chat_id = update.effective_chat.id
+        logger.info(f"Mesaj alındı: {message_text}, chat_id={chat_id}")
+
+        # Tekrarlayan mesaj kontrolü
+        if chat_id in self.last_messages and self.last_messages[chat_id] == message_text:
+            logger.info(f"Tekrarlayan mesaj algılandı: {message_text}, chat_id={chat_id}")
+            return  # Tekrarlayan mesajlara yanıt verme
+
+        self.last_messages[chat_id] = message_text
         try:
             self.storage.save_conversation(
-                chat_id=update.effective_chat.id,
+                chat_id=chat_id,
                 message=message_text,
                 timestamp=datetime.now()
             )
             deepseek = DeepSeekClient()
             conversations = self.storage.load_conversations()
-            group_context = conversations.get(str(update.effective_chat.id), [])
-            context_str = "\n".join([f"[{c['timestamp']}] {c['message']}" for c in group_context])
+            group_context = conversations.get(str(chat_id), [])
+            context_str = "\n".join([f"[{c['timestamp']}] {c['message']}" for c in group_context[-5:]])  # Son 5 mesaj
 
             prompt = f"""
-            Aşağıdaki grup konuşma mesajına Türkçe, doğal ve bağlama uygun bir yanıt ver. Yanıt minimum 500 karakter, maksimum 5000 karakter olmalı. Grup konuşma geçmişini dikkate alarak mesajı kişiselleştir ve eğer mesaj bir soru içeriyorsa (örneğin, 'yükselecek mi?'), bu soruya doğrudan hitap et. Sabit veya tekrarlayan ifadelerden kaçın, akıcı ve profesyonel bir üslup kullan. Eğer mesaj bir coin'le ilgiliyse (örneğin, 'BTCUSDT yükselecek mi?'), genel piyasa bilgisi veya son trendlere dayanarak kısa bir analiz yap.
+            Aşağıdaki grup konuşma mesajına Türkçe, doğal ve bağlama uygun bir yanıt ver. Yanıt minimum 500 karakter, maksimum 5000 karakter olmalı. Grup konuşma geçmişini dikkate alarak mesajı kişiselleştir ve eğer mesaj bir soru içeriyorsa (örneğin, 'yükselecek mi?'), bu soruya doğrudan hitap et. Sabit veya tekrarlayan ifadelerden kaçın, akıcı ve profesyonel bir üslup kullan. Eğer mesaj bir coin'le ilgiliyse (örneğin, 'BTCUSDT yükselecek mi?'), genel piyasa bilgisi veya son trendlere dayanarak kısa bir analiz yap. Mesaj sadece bir selam (örn. 'merhaba') içeriyorsa, esprili ama profesyonel bir şekilde sohbete yön ver.
 
             Mesaj: {message_text}
-            Grup konuşma geçmişi:
+            Grup konuşma geçmişi (son 5 mesaj):
             {context_str if context_str else 'Grup konuşma geçmişi yok.'}
             """
-            try:
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        deepseek.client.chat.completions.create,
-                        model="deepseek-reasoner",
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=5000,
-                        stream=True
-                    ),
-                    timeout=30
-                )
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    deepseek.client.chat.completions.create,
+                    model="deepseek-chat",  # Ana model olarak deepseek-chat
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=5000,
+                    stream=False  # CoT kaldırmak için stream=False
+                ),
+                timeout=30
+            )
 
-                response_text = ""
-                for chunk in response:
-                    if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
-                        response_text += chunk.choices[0].delta.content
-                    elif hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
-                        response_text += chunk.choices[0].delta.reasoning_content
-
-                if len(response_text) < 500:
-                    logger.warning(f"DeepSeek yanıtı 500 karakterden kısa: {len(response_text)} karakter")
-                    response_text += " " * (500 - len(response_text))
-                await update.message.reply_text(response_text[:5000])
-            except Exception as e:
-                logger.warning(f"deepseek-reasoner başarısız, deepseek-chat deneniyor: {str(e)}")
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        deepseek.client.chat.completions.create,
-                        model="deepseek-chat",
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=5000,
-                        stream=True
-                    ),
-                    timeout=30
-                )
-
-                response_text = ""
-                for chunk in response:
-                    if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
-                        response_text += chunk.choices[0].delta.content
-                    elif hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
-                        response_text += chunk.choices[0].delta.reasoning_content
-
-                if len(response_text) < 500:
-                    logger.warning(f"DeepSeek yanıtı (fallback) 500 karakterden kısa: {len(response_text)} karakter")
-                    response_text += " " * (500 - len(response_text))
-                await update.message.reply_text(response_text[:5000])
+            response_text = response.choices[0].message.content
+            logger.info(f"DeepSeek yanıtı: {response_text[:100]}... (Toplam: {len(response_text)} karakter)")
+            if len(response_text) < 500:
+                logger.warning(f"DeepSeek yanıtı 500 karakterden kısa: {len(response_text)} karakter")
+                response_text += " " * (500 - len(response_text))
+            await update.message.reply_text(response_text[:5000])
         except Exception as e:
             logger.error(f"Chat sırasında hata: {str(e)} - Full response: {e.response.text if hasattr(e, 'response') else 'No response'}")
-            await update.message.reply_text(f"Hata: DeepSeek yanıtında sorun oluştu: {str(e)}")
+            await update.message.reply_text(
+                "Hata: DeepSeek yanıtında sorun oluştu. Lütfen daha sonra tekrar deneyin veya bir coin analizi için /analyze komutunu kullanın."
+            )
 
     async def show_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Kaydedilen analizleri gösterir."""
@@ -722,10 +688,13 @@ class TelegramBot:
                 f"- Göstergeler:\n"
             )
             for interval in ['1m', '5m', '60m', '1d']:
+                volume_change = indicators.get(f'volume_change_{interval}', 'Bilinmiyor')
+                rsi = indicators.get(f'rsi_{interval}', 'Bilinmiyor')
+                macd = indicators.get(f'macd_{interval}', 'Bilinmiyor')
                 message += (
-                    f"  - Hacim Değişimi: {interval}: {indicators.get(f'volume_change_{interval}', 'Bilinmiyor') if isinstance(indicators.get(f'volume_change_{interval}'), (int, float)) else 'Bilinmiyor'}%\n"
-                    f"  - RSI: {interval}: {indicators.get(f'rsi_{interval}', 'Bilinmiyor') if isinstance(indicators.get(f'rsi_{interval}'), (int, float)) else 'Bilinmiyor'}\n"
-                    f"  - MACD: {interval}: {indicators.get(f'macd_{interval}', 'Bilinmiyor') if isinstance(indicators.get(f'macd_{interval}'), (int, float)) else 'Bilinmiyor'}\n"
+                    f"  - Hacim Değişimi: {interval}: {volume_change if isinstance(volume_change, (int, float)) else 'Bilinmiyor'}%\n"
+                    f"  - RSI: {interval}: {rsi if isinstance(rsi, (int, float)) else 'Bilinmiyor'}\n"
+                    f"  - MACD: {interval}: {macd if isinstance(macd, (int, float)) else 'Bilinmiyor'}\n"
                 )
             message += (
                 f"  - Bid/Ask Oranı: {indicators.get('bid_ask_ratio', 'Bilinmiyor') if isinstance(indicators.get('bid_ask_ratio'), (int, float)) else 'Bilinmiyor'}\n"
