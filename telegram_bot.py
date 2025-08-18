@@ -10,12 +10,11 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from openai import AsyncOpenAI
 from aiohttp import web
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 import re
 import numpy as np
 import json
-from datetime import timedelta
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,11 +22,20 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Seçilen coinler
-COINS = [
-    "OKBUSDT", "ADAUSDT", "DOTUSDT", "XLMUSDT", "LTCUSDT",
-    "UNIUSDT", "ATOMUSDT", "CRVUSDT", "TRUMPUSDT", "AAVEUSDT", "BNBUSDT"
-]
+# Seçilen coinler ve kısaltmaları
+COINS = {
+    "OKBUSDT": ["okb", "okbusdt"],
+    "ADAUSDT": ["ada", "adausdt"],
+    "DOTUSDT": ["dot", "dotusdt"],
+    "XLMUSDT": ["xlm", "xlmusdt"],
+    "LTCUSDT": ["ltc", "ltcusdt"],
+    "UNIUSDT": ["uni", "uniusdt"],
+    "ATOMUSDT": ["atom", "atomusdt"],
+    "CRVUSDT": ["crv", "crvusdt"],
+    "TRUMPUSDT": ["trump", "trumpusdt"],
+    "AAVEUSDT": ["aave", "aaveusdt"],
+    "BNBUSDT": ["bnb", "bnbusdt"]
+}
 
 class MEXCClient:
     """MEXC Spot API ile iletişim kurar."""
@@ -185,10 +193,10 @@ class DeepSeekClient:
             logger.error(f"DeepSeek API error for {symbol}: {e}")
             raise Exception(f"DeepSeek API'den veri alınamadı: {str(e)}")
 
-    async def generate_natural_response(self, user_message, context_info):
+    async def generate_natural_response(self, user_message, context_info, symbol=None):
         """Doğal dil yanıtı üretir."""
         prompt = f"""
-        Türkçe, doğal ve akıcı bir şekilde, bir insan gibi yanıt ver. Kullanıcı mesajına uygun, samimi ve profesyonel bir üslup kullan. Konuşma bağlamını dikkate al, gerektiğinde geçmiş analizlere veya konuşmalara atıfta bulun. Maksimum 200 karakter. Emoji kullanabilirsin.
+        Türkçe, doğal ve akıcı bir şekilde, bir insan gibi yanıt ver. Kullanıcı mesajına uygun, samimi ve profesyonel bir üslup kullan. Konuşma bağlamını ve varsa sembolü ({symbol}) dikkate al, gerektiğinde geçmiş analizlere veya konuşmalara atıfta bulun. Maksimum 200 karakter. Emoji kullanabilirsin.
 
         Kullanıcı mesajı: {user_message}
         Bağlam: {context_info}
@@ -204,6 +212,9 @@ class DeepSeekClient:
                 timeout=60.0
             )
             return response.choices[0].message.content
+        except asyncio.TimeoutError:
+            logger.error(f"DeepSeek API timeout for natural response")
+            return "😓 Biraz yavaş kaldık, tekrar deneyelim mi?"
         except Exception as e:
             logger.error(f"DeepSeek natural response error: {e}")
             return "😊 Mesajınızı aldım, ama ne demek istediğinizi tam anlayamadım. Daha fazla bilgi verebilir misiniz?"
@@ -233,7 +244,8 @@ class Storage:
                     chat_id INTEGER,
                     user_message TEXT,
                     bot_response TEXT,
-                    timestamp TEXT
+                    timestamp TEXT,
+                    symbol TEXT
                 )
             """)
             conn.commit()
@@ -256,19 +268,20 @@ class Storage:
         except sqlite3.Error as e:
             logger.error(f"SQLite error while saving analysis for {symbol}: {e}")
 
-    def save_conversation(self, chat_id, user_message, bot_response):
+    def save_conversation(self, chat_id, user_message, bot_response, symbol=None):
         """Konuşma geçmişini kaydeder."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO conversations (chat_id, user_message, bot_response, timestamp)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO conversations (chat_id, user_message, bot_response, timestamp, symbol)
+                    VALUES (?, ?, ?, ?, ?)
                 """, (
                     chat_id,
                     user_message,
                     bot_response,
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    symbol
                 ))
                 conn.commit()
         except sqlite3.Error as e:
@@ -311,17 +324,34 @@ class Storage:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT user_message, bot_response, timestamp 
+                    SELECT user_message, bot_response, timestamp, symbol 
                     FROM conversations 
                     WHERE chat_id = ? 
                     ORDER BY timestamp DESC 
                     LIMIT ?
                 """, (chat_id, limit))
                 results = cursor.fetchall()
-                return [{'user_message': row[0], 'bot_response': row[1], 'timestamp': row[2]} for row in results]
+                return [{'user_message': row[0], 'bot_response': row[1], 'timestamp': row[2], 'symbol': row[3]} for row in results]
         except sqlite3.Error as e:
             logger.error(f"SQLite error while fetching conversation history for chat_id {chat_id}: {e}")
             return []
+
+    def get_last_symbol(self, chat_id):
+        """Son konuşmada kullanılan sembolü çeker."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT symbol FROM conversations 
+                    WHERE chat_id = ? AND symbol IS NOT NULL 
+                    ORDER BY timestamp DESC 
+                    LIMIT 1
+                """, (chat_id,))
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error while fetching last symbol for chat_id {chat_id}: {e}")
+            return None
 
 class TelegramBot:
     """Telegram botu."""
@@ -340,10 +370,10 @@ class TelegramBot:
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Coin butonlarını gösterir."""
-        keyboard = [[InlineKeyboardButton(coin, callback_data=f"analyze_{coin}")] for coin in COINS]
+        keyboard = [[InlineKeyboardButton(coin, callback_data=f"analyze_{coin}")] for coin in COINS.keys()]
         response = (
-            "📈 Merhaba! Vadeli işlem analizi için coin seçebilir veya doğrudan yazabilirsiniz.\n"
-            "Örnek: 'ADAUSDT analiz', 'ADAUSDT trend', 'nasılsın'.\n"
+            "📈 Merhaba! Vadeli işlem analizi için coin seçebilir veya yazabilirsiniz.\n"
+            "Örnek: 'ADAUSDT analiz', 'OKB trend', 'nasılsın'.\n"
             "Geçmiş konuşmaları görmek için: 'geçmiş' yazın."
         )
         await update.message.reply_text(response, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -361,18 +391,18 @@ class TelegramBot:
         if analysis_key in self.active_analyses:
             response = f"⏳ {symbol} için analiz yapılıyor, bekleyin."
             await query.message.reply_text(response)
-            self.storage.save_conversation(update.effective_chat.id, query.data, response)
+            self.storage.save_conversation(update.effective_chat.id, query.data, response, symbol)
             return
         self.active_analyses[analysis_key] = True
         try:
             if not await self.mexc.validate_symbol(symbol):
                 response = f"❌ Hata: {symbol} spot piyasasında mevcut değil."
                 await query.message.reply_text(response)
-                self.storage.save_conversation(update.effective_chat.id, query.data, response)
+                self.storage.save_conversation(update.effective_chat.id, query.data, response, symbol)
                 return
             response = f"🔍 {symbol} için vadeli işlem analizi yapılıyor..."
             await query.message.reply_text(response)
-            self.storage.save_conversation(update.effective_chat.id, query.data, response)
+            self.storage.save_conversation(update.effective_chat.id, query.data, response, symbol)
             task = self.process_coin(symbol, update.effective_chat.id)
             if task is not None:
                 asyncio.create_task(task)
@@ -393,17 +423,26 @@ class TelegramBot:
             else:
                 response = "📜 Son konuşmalar:\n"
                 for entry in history:
-                    response += f"🕒 {entry['timestamp']}\n👤 Kullanıcı: {entry['user_message']}\n🤖 Bot: {entry['bot_response']}\n\n"
+                    response += f"🕒 {entry['timestamp']}\n👤 Kullanıcı: {entry['user_message']}\n🤖 Bot: {entry['bot_response']}\n"
+                    if entry['symbol']:
+                        response += f"💱 Sembol: {entry['symbol']}\n"
+                    response += "\n"
             await update.message.reply_text(response)
             self.storage.save_conversation(chat_id, text, response)
             return
 
         # Coin sembolünü bul
         symbol = None
-        for coin in COINS:
-            if coin.lower() in text:
+        for coin, aliases in COINS.items():
+            if any(alias in text for alias in aliases):
                 symbol = coin
                 break
+
+        # Eğer sembol bulunmadıysa, son konuşmadan sembolü çek
+        if not symbol:
+            symbol = self.storage.get_last_symbol(chat_id)
+            if symbol and any(keyword in text for keyword in ['long', 'short', 'trend', 'destek', 'direnç', 'yorum', 'neden']):
+                logger.info(f"Using last symbol {symbol} from conversation history")
 
         # Anahtar kelimeler
         keywords = ['analiz', 'trend', 'long', 'short', 'destek', 'direnç', 'yorum', 'neden']
@@ -422,105 +461,115 @@ class TelegramBot:
             return
 
         # Analizle ilgili işlem
-        current_analysis = self.storage.get_latest_analysis(symbol)
-        previous_analysis = self.storage.get_previous_analysis(symbol)
-        response = f"📊 {symbol} için yanıt:\n"
+        if symbol:
+            current_analysis = self.storage.get_latest_analysis(symbol)
+            previous_analysis = self.storage.get_previous_analysis(symbol)
+            response = f"📊 {symbol} için yanıt:\n"
 
-        if matched_keyword == 'analiz' or not matched_keyword:
-            # Yeni analiz başlat
-            analysis_key = f"{symbol}_futures_{chat_id}"
-            if analysis_key in self.active_analyses:
-                response = f"⏳ {symbol} için analiz yapılıyor, bekleyin."
-                await update.message.reply_text(response)
-                self.storage.save_conversation(chat_id, text, response)
-                return
-            self.active_analyses[analysis_key] = True
-            try:
-                if not await self.mexc.validate_symbol(symbol):
-                    response = f"❌ Hata: {symbol} spot piyasasında mevcut değil."
+            if matched_keyword == 'analiz' or not matched_keyword:
+                # Yeni analiz başlat
+                analysis_key = f"{symbol}_futures_{chat_id}"
+                if analysis_key in self.active_analyses:
+                    response = f"⏳ {symbol} için analiz yapılıyor, bekleyin."
                     await update.message.reply_text(response)
-                    self.storage.save_conversation(chat_id, text, response)
+                    self.storage.save_conversation(chat_id, text, response, symbol)
                     return
-                response = f"🔍 {symbol} için vadeli işlem analizi yapılıyor..."
-                await update.message.reply_text(response)
-                self.storage.save_conversation(chat_id, text, response)
-                task = self.process_coin(symbol, chat_id)
-                if task is not None:
-                    asyncio.create_task(task)
-            finally:
-                del self.active_analyses[analysis_key]
-            return
+                self.active_analyses[analysis_key] = True
+                try:
+                    if not await self.mexc.validate_symbol(symbol):
+                        response = f"❌ Hata: {symbol} spot piyasasında mevcut değil."
+                        await update.message.reply_text(response)
+                        self.storage.save_conversation(chat_id, text, response, symbol)
+                        return
+                    response = f"🔍 {symbol} için vadeli işlem analizi yapılıyor..."
+                    await update.message.reply_text(response)
+                    self.storage.save_conversation(chat_id, text, response, symbol)
+                    task = self.process_coin(symbol, chat_id)
+                    if task is not None:
+                        asyncio.create_task(task)
+                finally:
+                    del self.active_analyses[analysis_key]
+                return
 
-        if matched_keyword == 'trend':
-            if current_analysis:
-                long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
-                short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
-                response += f"📈 Güncel Long Trend: {long_trend.group(1) if long_trend else 'Bilinmiyor'}\n"
-                response += f"📉 Güncel Short Trend: {short_trend.group(1) if short_trend else 'Bilinmiyor'}\n"
-            if previous_analysis:
-                prev_long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', previous_analysis['analysis_text'], re.DOTALL)
-                prev_short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', previous_analysis['analysis_text'], re.DOTALL)
-                response += f"📅 Geçmiş ({previous_analysis['timestamp']}):\n"
-                response += f"📈 Geçmiş Long Trend: {prev_long_trend.group(1) if prev_long_trend else 'Bilinmiyor'}\n"
-                response += f"📉 Geçmiş Short Trend: {prev_short_trend.group(1) if prev_short_trend else 'Bilinmiyor'}\n"
-                if current_analysis and prev_long_trend and prev_short_trend:
-                    response += f"🔄 Karşılaştırma: Long trend {'değişmedi' if long_trend and long_trend.group(1) == prev_long_trend.group(1) else 'değişti'}, Short trend {'değişmedi' if short_trend and short_trend.group(1) == prev_short_trend.group(1) else 'değişti'}.\n"
+            if matched_keyword == 'trend':
+                if current_analysis:
+                    long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                    short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                    response += f"📈 Güncel Long Trend: {long_trend.group(1) if long_trend else 'Bilinmiyor'}\n"
+                    response += f"📉 Güncel Short Trend: {short_trend.group(1) if short_trend else 'Bilinmiyor'}\n"
+                if previous_analysis:
+                    prev_long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', previous_analysis['analysis_text'], re.DOTALL)
+                    prev_short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', previous_analysis['analysis_text'], re.DOTALL)
+                    response += f"📅 Geçmiş ({previous_analysis['timestamp']}):\n"
+                    response += f"📈 Geçmiş Long Trend: {prev_long_trend.group(1) if prev_long_trend else 'Bilinmiyor'}\n"
+                    response += f"📉 Geçmiş Short Trend: {prev_short_trend.group(1) if prev_short_trend else 'Bilinmiyor'}\n"
+                    if current_analysis and prev_long_trend and prev_short_trend:
+                        response += f"🔄 Karşılaştırma: Long trend {'değişmedi' if long_trend and long_trend.group(1) == prev_long_trend.group(1) else 'değişti'}, Short trend {'değişmedi' if short_trend and short_trend.group(1) == prev_short_trend.group(1) else 'değişti'}.\n"
 
-        elif matched_keyword == 'long':
-            if current_analysis:
-                long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', current_analysis, re.DOTALL)
-                response += f"📈 Güncel Long Pozisyon:\n{long_match.group(1).strip() if long_match else 'Bilinmiyor'}\n"
-            if previous_analysis:
-                prev_long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', previous_analysis['analysis_text'], re.DOTALL)
-                response += f"📅 Geçmiş Long Pozisyon ({previous_analysis['timestamp']}):\n{prev_long_match.group(1).strip() if prev_long_match else 'Bilinmiyor'}\n"
-                if current_analysis and prev_long_match:
-                    curr_entry = re.search(r'Giriş: \$([\d.]+)', long_match.group(1)) if long_match else None
-                    prev_entry = re.search(r'Giriş: \$([\d.]+)', prev_long_match.group(1)) if prev_long_match else None
-                    if curr_entry and prev_entry:
-                        response += f"🔄 Karşılaştırma: Giriş fiyatı ${prev_entry.group(1)}’den ${curr_entry.group(1)}’e {'yükseldi' if float(curr_entry.group(1)) > float(prev_entry.group(1)) else 'düştü'}.\n"
+            elif matched_keyword == 'long':
+                if current_analysis:
+                    long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', current_analysis, re.DOTALL)
+                    response += f"📈 Güncel Long Pozisyon:\n{long_match.group(1).strip() if long_match else 'Bilinmiyor'}\n"
+                if previous_analysis:
+                    prev_long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', previous_analysis['analysis_text'], re.DOTALL)
+                    response += f"📅 Geçmiş Long Pozisyon ({previous_analysis['timestamp']}):\n{prev_long_match.group(1).strip() if prev_long_match else 'Bilinmiyor'}\n"
+                    if current_analysis and prev_long_match:
+                        curr_entry = re.search(r'Giriş: \$([\d.]+)', long_match.group(1)) if long_match else None
+                        prev_entry = re.search(r'Giriş: \$([\d.]+)', prev_long_match.group(1)) if prev_long_match else None
+                        if curr_entry and prev_entry:
+                            response += f"🔄 Karşılaştırma: Giriş fiyatı ${prev_entry.group(1)}’den ${curr_entry.group(1)}’e {'yükseldi' if float(curr_entry.group(1)) > float(prev_entry.group(1)) else 'düştü'}.\n"
+                response = await self.deepseek.generate_natural_response(text, context_info, symbol) + "\n" + response
 
-        elif matched_keyword == 'short':
-            if current_analysis:
-                short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', current_analysis, re.DOTALL)
-                response += f"📉 Güncel Short Pozisyon:\n{short_match.group(1).strip() if short_match else 'Bilinmiyor'}\n"
-            if previous_analysis:
-                prev_short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', previous_analysis['analysis_text'], re.DOTALL)
-                response += f"📅 Geçmiş Short Pozisyon ({previous_analysis['timestamp']}):\n{prev_short_match.group(1).strip() if prev_short_match else 'Bilinmiyor'}\n"
-                if current_analysis and prev_short_match:
-                    curr_entry = re.search(r'Giriş: \$([\d.]+)', short_match.group(1)) if short_match else None
-                    prev_entry = re.search(r'Giriş: \$([\d.]+)', prev_short_match.group(1)) if prev_short_match else None
-                    if curr_entry and prev_entry:
-                        response += f"🔄 Karşılaştırma: Giriş fiyatı ${prev_entry.group(1)}’den ${curr_entry.group(1)}’e {'yükseldi' if float(curr_entry.group(1)) > float(prev_entry.group(1)) else 'düştü'}.\n"
+            elif matched_keyword == 'short':
+                if current_analysis:
+                    short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', current_analysis, re.DOTALL)
+                    response += f"📉 Güncel Short Pozisyon:\n{short_match.group(1).strip() if short_match else 'Bilinmiyor'}\n"
+                if previous_analysis:
+                    prev_short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', previous_analysis['analysis_text'], re.DOTALL)
+                    response += f"📅 Geçmiş Short Pozisyon ({previous_analysis['timestamp']}):\n{prev_short_match.group(1).strip() if prev_short_match else 'Bilinmiyor'}\n"
+                    if current_analysis and prev_short_match:
+                        curr_entry = re.search(r'Giriş: \$([\d.]+)', short_match.group(1)) if short_match else None
+                        prev_entry = re.search(r'Giriş: \$([\d.]+)', prev_short_match.group(1)) if prev_short_match else None
+                        if curr_entry and prev_entry:
+                            response += f"🔄 Karşılaştırma: Giriş fiyatı ${prev_entry.group(1)}’den ${curr_entry.group(1)}’e {'yükseldi' if float(curr_entry.group(1)) > float(prev_entry.group(1)) else 'düştü'}.\n"
+                response = await self.deepseek.generate_natural_response(text, context_info, symbol) + "\n" + response
 
-        elif matched_keyword == 'destek':
-            if current_analysis:
-                support_match = re.search(r'📍 Destek: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
-                response += f"📍 Güncel Destek: {support_match.group(1) if support_match else 'Bilinmiyor'}\n"
-            if previous_analysis:
-                support_levels = json.loads(previous_analysis['indicators'])['support_levels']
-                response += f"📅 Geçmiş Destek ({previous_analysis['timestamp']}): {', '.join([f'${x:.2f}' for x in support_levels])}\n"
+            elif matched_keyword == 'destek':
+                if current_analysis:
+                    support_match = re.search(r'📍 Destek: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                    response += f"📍 Güncel Destek: {support_match.group(1) if support_match else 'Bilinmiyor'}\n"
+                if previous_analysis:
+                    support_levels = json.loads(previous_analysis['indicators'])['support_levels']
+                    response += f"📅 Geçmiş Destek ({previous_analysis['timestamp']}): {', '.join([f'${x:.2f}' for x in support_levels])}\n"
+                response = await self.deepseek.generate_natural_response(text, context_info, symbol) + "\n" + response
 
-        elif matched_keyword == 'direnç':
-            if current_analysis:
-                resistance_match = re.search(r'📍 Direnç: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
-                response += f"📍 Güncel Direnç: {resistance_match.group(1) if resistance_match else 'Bilinmiyor'}\n"
-            if previous_analysis:
-                resistance_levels = json.loads(previous_analysis['indicators'])['resistance_levels']
-                response += f"📅 Geçmiş Direnç ({previous_analysis['timestamp']}): {', '.join([f'${x:.2f}' for x in resistance_levels])}\n"
+            elif matched_keyword == 'direnç':
+                if current_analysis:
+                    resistance_match = re.search(r'📍 Direnç: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                    response += f"📍 Güncel Direnç: {resistance_match.group(1) if resistance_match else 'Bilinmiyor'}\n"
+                if previous_analysis:
+                    resistance_levels = json.loads(previous_analysis['indicators'])['resistance_levels']
+                    response += f"📅 Geçmiş Direnç ({previous_analysis['timestamp']}): {', '.join([f'${x:.2f}' for x in resistance_levels])}\n"
+                response = await self.deepseek.generate_natural_response(text, context_info, symbol) + "\n" + response
 
-        elif matched_keyword in ['yorum', 'neden']:
-            if current_analysis:
-                comment_match = re.search(r'💬 Yorum:(.*)', current_analysis, re.DOTALL)
-                response += f"💬 Güncel Yorum: {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
-            if previous_analysis:
-                comment_match = re.search(r'💬 Yorum:(.*)', previous_analysis['analysis_text'], re.DOTALL)
-                response += f"📅 Geçmiş Yorum ({previous_analysis['timestamp']}): {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
+            elif matched_keyword in ['yorum', 'neden']:
+                if current_analysis:
+                    comment_match = re.search(r'💬 Yorum:(.*)', current_analysis, re.DOTALL)
+                    response += f"💬 Güncel Yorum: {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
+                if previous_analysis:
+                    comment_match = re.search(r'💬 Yorum:(.*)', previous_analysis['analysis_text'], re.DOTALL)
+                    response += f"📅 Geçmiş Yorum ({previous_analysis['timestamp']}): {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
+                response = await self.deepseek.generate_natural_response(text, context_info, symbol) + "\n" + response
 
-        if not current_analysis and not previous_analysis and matched_keyword:
-            response += f"❌ {symbol} için analiz bulunamadı. Yeni analiz yapmamı ister misiniz? (örn: {symbol} analiz)"
+            if not current_analysis and not previous_analysis and matched_keyword:
+                response += f"❌ {symbol} için analiz bulunamadı. Yeni analiz yapmamı ister misiniz? (örn: {symbol} analiz)"
 
-        await update.message.reply_text(response)
-        self.storage.save_conversation(chat_id, text, response)
+            await update.message.reply_text(response)
+            self.storage.save_conversation(chat_id, text, response, symbol)
+        else:
+            response = await self.deepseek.generate_natural_response(text, context_info)
+            await update.message.reply_text(response)
+            self.storage.save_conversation(chat_id, text, response)
 
     async def process_coin(self, symbol, chat_id):
         """Coin için analiz yapar."""
@@ -529,20 +578,20 @@ class TelegramBot:
             if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m']):
                 response = f"❌ {symbol} için veri yok."
                 await self.app.bot.send_message(chat_id=chat_id, text=response)
-                self.storage.save_conversation(chat_id, symbol, response)
+                self.storage.save_conversation(chat_id, symbol, response, symbol)
                 return
             data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], symbol)
             data['deepseek_analysis'] = await self.deepseek.analyze_coin(symbol, data)
             message = data['deepseek_analysis']['analysis_text']
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             self.storage.save_analysis(symbol, data)
-            self.storage.save_conversation(chat_id, symbol, message)
+            self.storage.save_conversation(chat_id, symbol, message, symbol)
             return data
         except Exception as e:
             logger.error(f"Error processing coin {symbol}: {e}")
             response = f"❌ {symbol} analizi sırasında hata: {str(e)}"
             await self.app.bot.send_message(chat_id=chat_id, text=response)
-            self.storage.save_conversation(chat_id, symbol, response)
+            self.storage.save_conversation(chat_id, symbol, response, symbol)
             return
 
     async def run(self):
