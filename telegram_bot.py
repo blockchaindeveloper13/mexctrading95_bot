@@ -157,18 +157,33 @@ class DeepSeekClient:
 
             Grup konuşmalarındaki sorulara veya yorumlara yanıt ver. Yanıtın akıcı, profesyonel ve en az 500 karakter olsun. Sabit ifadelerden uzak dur, yaratıcı ol.
             """
-            response = self.client.chat.completions.create(
-                model="deepseek-reason",  # Model deepseek-reason olarak güncellendi
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=5000,
-                stream=False
-            )
-            analysis_text = response.choices[0].message.content
-            logger.info(f"DeepSeek ham yanıtı ({symbol}): {analysis_text}")
-            if len(analysis_text) < 500:
-                logger.warning(f"DeepSeek yanıtı ({symbol}) 500 karakterden kısa: {len(analysis_text)} karakter")
-                analysis_text += " " * (500 - len(analysis_text))
-            return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
+            try:
+                response = self.client.chat.completions.create(
+                    model="deepseek-reasoner",  # Doğru model adı
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=5000,
+                    stream=False
+                )
+                analysis_text = response.choices[0].message.content
+                logger.info(f"DeepSeek ham yanıtı ({symbol}): {analysis_text}")
+                if len(analysis_text) < 500:
+                    logger.warning(f"DeepSeek yanıtı ({symbol}) 500 karakterden kısa: {len(analysis_text)} karakter")
+                    analysis_text += " " * (500 - len(analysis_text))
+                return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
+            except Exception as e:
+                logger.warning(f"{symbol} için deepseek-reasoner başarısız, deepseek-chat deneniyor: {str(e)}")
+                response = self.client.chat.completions.create(
+                    model="deepseek-chat",  # Fallback model
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=5000,
+                    stream=False
+                )
+                analysis_text = response.choices[0].message.content
+                logger.info(f"DeepSeek ham yanıtı ({symbol}, fallback): {analysis_text}")
+                if len(analysis_text) < 500:
+                    logger.warning(f"DeepSeek yanıtı ({symbol}, fallback) 500 karakterden kısa: {len(analysis_text)} karakter")
+                    analysis_text += " " * (500 - len(analysis_text))
+                return {'short_term': self.parse_deepseek_response(analysis_text, data['price'])}
         except Exception as e:
             logger.error(f"{symbol} için DeepSeek analizi sırasında hata: {str(e)}")
             return {
@@ -614,28 +629,53 @@ class TelegramBot:
             Grup konuşma geçmişi:
             {context_str if context_str else 'Grup konuşma geçmişi yok.'}
             """
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    deepseek.client.chat.completions.create,
-                    model="deepseek-reason",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=5000,
-                    stream=True  # Akış modu etkinleştirildi
-                ),
-                timeout=30  # Timeout 30 saniyeye çıkarıldı
-            )
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        deepseek.client.chat.completions.create,
+                        model="deepseek-reasoner",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=5000,
+                        stream=True
+                    ),
+                    timeout=30
+                )
 
-            response_text = ""
-            for chunk in response:
-                if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
-                    response_text += chunk.choices[0].delta.content
-                elif hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
-                    response_text += chunk.choices[0].delta.reasoning_content
+                response_text = ""
+                for chunk in response:
+                    if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
+                        response_text += chunk.choices[0].delta.content
+                    elif hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                        response_text += chunk.choices[0].delta.reasoning_content
 
-            if len(response_text) < 500:
-                logger.warning(f"DeepSeek yanıtı 500 karakterden kısa: {len(response_text)} karakter")
-                response_text += " " * (500 - len(response_text))
-            await update.message.reply_text(response_text[:5000])
+                if len(response_text) < 500:
+                    logger.warning(f"DeepSeek yanıtı 500 karakterden kısa: {len(response_text)} karakter")
+                    response_text += " " * (500 - len(response_text))
+                await update.message.reply_text(response_text[:5000])
+            except Exception as e:
+                logger.warning(f"deepseek-reasoner başarısız, deepseek-chat deneniyor: {str(e)}")
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        deepseek.client.chat.completions.create,
+                        model="deepseek-chat",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=5000,
+                        stream=True
+                    ),
+                    timeout=30
+                )
+
+                response_text = ""
+                for chunk in response:
+                    if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
+                        response_text += chunk.choices[0].delta.content
+                    elif hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                        response_text += chunk.choices[0].delta.reasoning_content
+
+                if len(response_text) < 500:
+                    logger.warning(f"DeepSeek yanıtı (fallback) 500 karakterden kısa: {len(response_text)} karakter")
+                    response_text += " " * (500 - len(response_text))
+                await update.message.reply_text(response_text[:5000])
         except Exception as e:
             logger.error(f"Chat sırasında hata: {str(e)} - Full response: {e.response.text if hasattr(e, 'response') else 'No response'}")
             await update.message.reply_text(f"Hata: DeepSeek yanıtında sorun oluştu: {str(e)}")
