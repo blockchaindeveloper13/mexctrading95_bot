@@ -151,19 +151,23 @@ class DeepSeekClient:
             analysis_text = response.choices[0].message.content
             if len(analysis_text) < 500:
                 analysis_text += " " * (500 - len(analysis_text))
-            parsed = self.parse_response(analysis_text, data['price'])
-            if not parsed['long']['entry_price'] or not parsed['short']['entry_price']:
+            parsed = self.parse_response(analysis_text)
+            if not all([
+                parsed['long']['entry_price'], parsed['long']['exit_price'], parsed['long']['stop_loss'],
+                parsed['long']['risk_reward_ratio'], parsed['short']['entry_price'], parsed['short']['exit_price'],
+                parsed['short']['stop_loss'], parsed['short']['risk_reward_ratio']
+            ]):
                 raise ValueError("DeepSeek yanıtı eksik veya geçersiz.")
             return parsed
         except (asyncio.TimeoutError, ValueError, Exception) as e:
             logger.error(f"DeepSeek API error for {symbol}: {e}")
             raise Exception(f"DeepSeek API'den veri alınamadı: {str(e)}")
 
-    def parse_response(self, text, current_price):
+    def parse_response(self, text):
         """DeepSeek yanıtını ayrıştırır."""
         result = {
-            'long': {'entry_price': None, 'exit_price': None, 'stop_loss': None, 'leverage': '3x', 'risk_reward_ratio': None, 'trend': 'Nötr'},
-            'short': {'entry_price': None, 'exit_price': None, 'stop_loss': None, 'leverage': '3x', 'risk_reward_ratio': None, 'trend': 'Nötr'},
+            'long': {'entry_price': None, 'exit_price': None, 'stop_loss': None, 'leverage': None, 'risk_reward_ratio': None, 'trend': None},
+            'short': {'entry_price': None, 'exit_price': None, 'stop_loss': None, 'leverage': None, 'risk_reward_ratio': None, 'trend': None},
             'comment': text
         }
         lines = text.split('\n')
@@ -178,11 +182,11 @@ class DeepSeekClient:
                 elif f'{position}: stop-loss' in line and number_match:
                     result[position]['stop_loss'] = float(number_match.group(0))
                 elif f'{position}: kaldıraç' in line:
-                    result[position]['leverage'] = line.split(':')[1].strip() if ':' in line else '3x'
+                    result[position]['leverage'] = line.split(':')[1].strip() if ':' in line else None
                 elif f'{position}: risk/ödül' in line and number_match:
                     result[position]['risk_reward_ratio'] = float(number_match.group(0))
                 elif f'{position}: trend' in line:
-                    result[position]['trend'] = line.split(':')[1].strip() if ':' in line else 'Nötr'
+                    result[position]['trend'] = line.split(':')[1].strip() if ':' in line else None
         return result
 
 class Storage:
