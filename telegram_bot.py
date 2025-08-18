@@ -322,7 +322,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CallbackQueryHandler(self.button))
         self.app.add_handler(ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex(r'(?i)\b(?:analiz|trend|long|short|destek|direnç|yorum|neden)\b.*\b(?:' + '|'.join(COINS) + r')\b', re.IGNORECASE), self.handle_analysis_query)],
+            entry_points=[MessageHandler(filters.Regex(r'\b(analiz|trend|long|short|destek|direnç|yorum|neden)\b.*\b(' + '|'.join(COINS) + r')\b'), self.handle_analysis_query)],
             states={
                 ASKING_ANALYSIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_analysis_query)]
             },
@@ -371,11 +371,14 @@ class TelegramBot:
 
         # Güncel analiz için son mesajı kontrol et
         current_analysis = None
-        messages = await context.bot.get_chat_history(update.effective_chat.id, limit=10)
-        for msg in messages:
-            if msg.text and symbol in msg.text and "Vadeli Analiz" in msg.text:
-                current_analysis = msg.text
-                break
+        try:
+            messages = await context.bot.get_chat_history(update.effective_chat.id, limit=10)
+            for msg in messages:
+                if msg.text and symbol in msg.text and "Vadeli Analiz" in msg.text:
+                    current_analysis = msg.text
+                    break
+        except Exception as e:
+            logger.error(f"Error fetching chat history: {e}")
 
         # Geçmiş analiz
         previous_analysis = self.storage.get_previous_analysis(symbol)
