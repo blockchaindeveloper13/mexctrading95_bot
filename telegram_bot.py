@@ -294,18 +294,19 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
                 atr = ta.atr(df['high'], df['low'], df['close'], length=14) if len(df) >= 14 else None
                 indicators[f'atr_{interval}'] = (atr.iloc[-1] / df['close'].iloc[-1] * 100) if atr is not None and not atr.empty else 0.0
 
-                # Destek ve Direnç
-                pivot = ta.pivot(df['high'], df['low'], df['close']) if len(df) >= 2 else None
-                fib = ta.fibonacci(df['high'], df['low']) if len(df) >= 2 else None
+                # Manuel Pivot Noktaları ve Fibonacci Seviyeleri
+                last_row = df.iloc[-1]
+                pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
+                range_high_low = last_row['high'] - last_row['low']
                 indicators['support_levels'] = [
-                    pivot['pivot'].iloc[-1] if pivot is not None and not pivot.empty else df['close'].iloc[-1] * 0.95,
-                    fib['FIBL_0.236'].iloc[-1] if fib is not None and not fib.empty else df['close'].iloc[-1] * 0.90,
-                    fib['FIBL_0.382'].iloc[-1] if fib is not None and not fib.empty else df['close'].iloc[-1] * 0.85
+                    pivot - range_high_low * 0.5,  # S1: Pivot - 0.5 * (High - Low)
+                    pivot - range_high_low * 0.618,  # Fibonacci 0.618
+                    pivot - range_high_low  # S2: Pivot - (High - Low)
                 ]
                 indicators['resistance_levels'] = [
-                    pivot['R1'].iloc[-1] if pivot is not None and not pivot.empty else df['close'].iloc[-1] * 1.05,
-                    fib['FIBU_0.236'].iloc[-1] if fib is not None and not fib.empty else df['close'].iloc[-1] * 1.10,
-                    fib['FIBU_0.382'].iloc[-1] if fib is not None and not fib.empty else df['close'].iloc[-1] * 1.15
+                    pivot + range_high_low * 0.5,  # R1: Pivot + 0.5 * (High - Low)
+                    pivot + range_high_low * 0.618,  # Fibonacci 0.618
+                    pivot + range_high_low  # R2: Pivot + (High - Low)
                 ]
             except Exception as e:
                 logger.error(f"Error calculating indicators for {symbol} ({interval}): {e}")
