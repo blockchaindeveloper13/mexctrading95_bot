@@ -45,7 +45,7 @@ class MEXCClient:
         try:
             klines = {}
             for interval in ['5m', '15m', '60m']:
-                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=200"
+                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"  # Limit 100'e düşürüldü
                 async with self.session.get(url) as response:
                     response_data = await response.json() if response.status == 200 else []
                     klines[interval] = {'data': response_data}
@@ -86,7 +86,7 @@ class MEXCClient:
         """BTC/USDT spot verilerini çeker."""
         await self.initialize()
         async with self.session:
-            url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=200"
+            url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100"
             async with self.session.get(url) as response:
                 response_data = await response.json() if response.status == 200 else []
                 logger.info(f"BTC data response: {response_data[:1]}...")
@@ -109,7 +109,7 @@ class MEXCClient:
             self.session = None
 
 class DeepSeekClient:
-    """DeepSeek API ile analiz yapar."""
+    """DeepSeek API ile analiz yapar ve doğal dil işleme sağlar."""
     def __init__(self):
         self.client = AsyncOpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
 
@@ -128,7 +128,7 @@ class DeepSeekClient:
           - ATR (5m): %{data['indicators']['atr_5m']:.2f}
           - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
         - Destek: {', '.join([f'${x:.2f}' for x in support_levels])}
-        - Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
+        - Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])uzie
 
         Çıktı formatı:
         📊 {symbol} Vadeli Analiz ({datetime.now().strftime('%Y-%m-%d %H:%M')})
@@ -161,7 +161,7 @@ class DeepSeekClient:
                     max_tokens=1000,
                     stream=False
                 ),
-                timeout=120.0
+                timeout=180.0  # Timeout artırıldı
             )
             analysis_text = response.choices[0].message.content
             logger.info(f"DeepSeek raw response for {symbol}: {analysis_text}")
@@ -183,6 +183,29 @@ class DeepSeekClient:
         except (asyncio.TimeoutError, ValueError, Exception) as e:
             logger.error(f"DeepSeek API error for {symbol}: {e}")
             raise Exception(f"DeepSeek API'den veri alınamadı: {str(e)}")
+
+    async def generate_natural_response(self, user_message, context_info):
+        """Doğal dil yanıtı üretir."""
+        prompt = f"""
+        Türkçe, doğal ve akıcı bir şekilde, bir insan gibi yanıt ver. Kullanıcı mesajına uygun, samimi ve profesyonel bir üslup kullan. Konuşma bağlamını dikkate al, gerektiğinde geçmiş analizlere veya konuşmalara atıfta bulun. Maksimum 200 karakter. Emoji kullanabilirsin.
+
+        Kullanıcı mesajı: {user_message}
+        Bağlam: {context_info}
+        """
+        try:
+            response = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=200,
+                    stream=False
+                ),
+                timeout=60.0
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"DeepSeek natural response error: {e}")
+            return "😊 Mesajınızı aldım, ama ne demek istediğinizi tam anlayamadım. Daha fazla bilgi verebilir misiniz?"
 
 class Storage:
     """Analizleri ve konuşma geçmişini SQLite’ta depolar."""
@@ -289,7 +312,7 @@ class Storage:
                 cursor.execute("""
                     SELECT user_message, bot_response, timestamp 
                     FROM conversations 
-                    WHERE chat propietarios = ? 
+                    WHERE chat_id = ? 
                     ORDER BY timestamp DESC 
                     LIMIT ?
                 """, (chat_id, limit))
@@ -305,6 +328,7 @@ class TelegramBot:
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
         self.storage = Storage()
         self.mexc = MEXCClient()
+        self.deepseek = DeepSeekClient()
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.app = Application.builder().token(bot_token).build()
         self.app.add_handler(CommandHandler("start", self.start))
@@ -317,9 +341,8 @@ class TelegramBot:
         """Coin butonlarını gösterir."""
         keyboard = [[InlineKeyboardButton(coin, callback_data=f"analyze_{coin}")] for coin in COINS]
         response = (
-            "📈 Vadeli işlem analizi için coin seç:\n"
-            "Metinle analiz için: 'ADAUSDT analiz' gibi yazın.\n"
-            "Örnek komutlar: 'ADAUSDT trend', 'ADAUSDT long', 'ADAUSDT destek'\n"
+            "📈 Merhaba! Vadeli işlem analizi için coin seçebilir veya doğrudan yazabilirsiniz.\n"
+            "Örnek: 'ADAUSDT analiz', 'ADAUSDT trend', 'nasılsın'.\n"
             "Geçmiş konuşmaları görmek için: 'geçmiş' yazın."
         )
         await update.message.reply_text(response, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -356,7 +379,7 @@ class TelegramBot:
             del self.active_analyses[analysis_key]
 
     async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Tüm metin mesajlarını işler."""
+        """Tüm metin mesajlarını işler ve doğal yanıtlar üretir."""
         text = update.message.text.lower()
         chat_id = update.effective_chat.id
         logger.info(f"Received message: {text}")
@@ -381,21 +404,28 @@ class TelegramBot:
                 symbol = coin
                 break
 
-        if not symbol:
-            response = "🔍 Lütfen geçerli bir coin sembolü belirtin (örn: ADAUSDT). Örnek: 'ADAUSDT analiz' veya 'ADAUSDT trend'"
+        # Anahtar kelimeler
+        keywords = ['analiz', 'trend', 'long', 'short', 'destek', 'direnç', 'yorum', 'neden']
+        matched_keyword = next((k for k in keywords if k in text), None)
+
+        # Doğal dil yanıtı için bağlam
+        context_info = f"Son konuşmalar: {self.storage.get_conversation_history(chat_id, limit=3)}"
+        if symbol:
+            context_info += f"\nSon {symbol} analizi: {self.storage.get_latest_analysis(symbol) or 'Yok'}"
+
+        # Coin sembolü veya anahtar kelime yoksa doğal dil yanıtı
+        if not symbol and not matched_keyword:
+            response = await self.deepseek.generate_natural_response(text, context_info)
             await update.message.reply_text(response)
             self.storage.save_conversation(chat_id, text, response)
             return
 
-        # Analizle ilgili anahtar kelimeleri kontrol et
-        keywords = ['analiz', 'trend', 'long', 'short', 'destek', 'direnç', 'yorum', 'neden']
-        matched_keyword = next((k for k in keywords if k in text), None)
-
+        # Analizle ilgili işlem
         current_analysis = self.storage.get_latest_analysis(symbol)
         previous_analysis = self.storage.get_previous_analysis(symbol)
         response = f"📊 {symbol} için yanıt:\n"
 
-        if not matched_keyword or matched_keyword == 'analiz':
+        if matched_keyword == 'analiz' or not matched_keyword:
             # Yeni analiz başlat
             analysis_key = f"{symbol}_futures_{chat_id}"
             if analysis_key in self.active_analyses:
@@ -420,7 +450,6 @@ class TelegramBot:
                 del self.active_analyses[analysis_key]
             return
 
-        # Diğer anahtar kelimelere göre yanıt
         if matched_keyword == 'trend':
             if current_analysis:
                 long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
@@ -486,7 +515,7 @@ class TelegramBot:
                 comment_match = re.search(r'💬 Yorum:(.*)', previous_analysis['analysis_text'], re.DOTALL)
                 response += f"📅 Geçmiş Yorum ({previous_analysis['timestamp']}): {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
 
-        if not current_analysis and not previous_analysis:
+        if not current_analysis and not previous_analysis and matched_keyword:
             response += f"❌ {symbol} için analiz bulunamadı. Yeni analiz yapmamı ister misiniz? (örn: {symbol} analiz)"
 
         await update.message.reply_text(response)
@@ -502,8 +531,7 @@ class TelegramBot:
                 self.storage.save_conversation(chat_id, symbol, response)
                 return
             data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], symbol)
-            deepseek = DeepSeekClient()
-            data['deepseek_analysis'] = await deepseek.analyze_coin(symbol, data)
+            data['deepseek_analysis'] = await self.deepseek.analyze_coin(symbol, data)
             message = data['deepseek_analysis']['analysis_text']
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             self.storage.save_analysis(symbol, data)
