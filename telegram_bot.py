@@ -103,19 +103,13 @@ class DeepSeekClient:
         support_levels = data['indicators'].get('support_levels', [0.0, 0.0, 0.0])
         resistance_levels = data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-2000 karakter. Aşağıdaki verilere dayanarak giriş, çıkış, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan.
+        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit (çıkış), stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Her alan için tam bir sayı veya metin döndür.
 
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
         - Göstergeler:
           - MA (5m): 50={data['indicators']['ma_5m']['ma50']:.2f}, 200={data['indicators']['ma_5m']['ma200']:.2f}
-          - EMA (5m): 12={data['indicators']['ema_5m']['ema12']:.2f}, 26={data['indicators']['ema_5m']['ema26']:.2f}
-          - SAR (5m): {data['indicators']['sar_5m']:.2f}
-          - Bollinger (5m): Üst={data['indicators']['bb_5m']['upper']:.2f}, Alt={data['indicators']['bb_5m']['lower']:.2f}
-          - MACD (5m): {data['indicators']['macd_5m']:.2f}
-          - KDJ (5m): {data['indicators']['kdj_5m']:.2f}
           - RSI (5m): {data['indicators']['rsi_5m']:.2f}
-          - StochRSI (5m): {data['indicators']['stochrsi_5m']:.2f}
           - ATR (5m): %{data['indicators']['atr_5m']:.2f}
           - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
         - Destek: {', '.join([f'${x:.2f}' for x in support_levels])}
@@ -124,70 +118,52 @@ class DeepSeekClient:
         Çıktı formatı:
         📈 Long Pozisyon:
         - Giriş: $X
-        - Çıkış: $Y
+        - Take-Profit: $Y
         - Stop-Loss: $Z
         - Kaldıraç: Nx
         - Risk/Ödül: A:B
         - Trend: [Yükseliş/Düşüş/Nötr]
         📉 Short Pozisyon:
         - Giriş: $X
-        - Çıkış: $Y
+        - Take-Profit: $Y
         - Stop-Loss: $Z
         - Kaldıraç: Nx
         - Risk/Ödül: A:B
         - Trend: [Yükseliş/Düşüş/Nötr]
-        💬 Yorum: [Detaylı analiz ve gerekçe]
+        💬 Yorum: [Analiz süreci, hangi göstergelere dayandığı, giriş/take-profit/stop-loss seçim gerekçesi]
         """
         try:
             response = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=2000,
+                    max_tokens=1000,
                     stream=False
                 ),
                 timeout=120.0  # 2 dakika
             )
             analysis_text = response.choices[0].message.content
+            logger.info(f"DeepSeek raw response for {symbol}: {analysis_text}")
             if len(analysis_text) < 500:
                 analysis_text += " " * (500 - len(analysis_text))
-            parsed = self.parse_response(analysis_text)
-            if not all([
-                parsed['long']['entry_price'], parsed['long']['exit_price'], parsed['long']['stop_loss'],
-                parsed['long']['risk_reward_ratio'], parsed['short']['entry_price'], parsed['short']['exit_price'],
-                parsed['short']['stop_loss'], parsed['short']['risk_reward_ratio']
-            ]):
-                raise ValueError("DeepSeek yanıtı eksik veya geçersiz.")
-            return parsed
+            
+            # Yanıtı kontrol et
+            required_fields = ['Giriş', 'Take-Profit', 'Stop-Loss', 'Kaldıraç', 'Risk/Ödül', 'Trend', 'Yorum']
+            missing_fields = []
+            for field in required_fields:
+                if field == 'Yorum':
+                    if not analysis_text.strip() or '💬 Yorum:' not in analysis_text:
+                        missing_fields.append(field)
+                elif field not in analysis_text:
+                    missing_fields.append(field)
+            if missing_fields:
+                raise ValueError(f"DeepSeek yanıtı eksik: {', '.join(missing_fields)}")
+
+            # Yanıtı doğrudan döndür
+            return {'analysis_text': analysis_text}
         except (asyncio.TimeoutError, ValueError, Exception) as e:
             logger.error(f"DeepSeek API error for {symbol}: {e}")
             raise Exception(f"DeepSeek API'den veri alınamadı: {str(e)}")
-
-    def parse_response(self, text):
-        """DeepSeek yanıtını ayrıştırır."""
-        result = {
-            'long': {'entry_price': None, 'exit_price': None, 'stop_loss': None, 'leverage': None, 'risk_reward_ratio': None, 'trend': None},
-            'short': {'entry_price': None, 'exit_price': None, 'stop_loss': None, 'leverage': None, 'risk_reward_ratio': None, 'trend': None},
-            'comment': text
-        }
-        lines = text.split('\n')
-        for line in lines:
-            line = line.strip().lower()
-            number_match = re.search(r'\d+\.?\d*', line)
-            for position in ['long', 'short']:
-                if f'{position}: giriş' in line and number_match:
-                    result[position]['entry_price'] = float(number_match.group(0))
-                elif f'{position}: çıkış' in line and number_match:
-                    result[position]['exit_price'] = float(number_match.group(0))
-                elif f'{position}: stop-loss' in line and number_match:
-                    result[position]['stop_loss'] = float(number_match.group(0))
-                elif f'{position}: kaldıraç' in line:
-                    result[position]['leverage'] = line.split(':')[1].strip() if ':' in line else None
-                elif f'{position}: risk/ödül' in line and number_match:
-                    result[position]['risk_reward_ratio'] = float(number_match.group(0))
-                elif f'{position}: trend' in line:
-                    result[position]['trend'] = line.split(':')[1].strip() if ':' in line else None
-        return result
 
 class Storage:
     """Analizleri SQLite’ta depolar."""
@@ -205,21 +181,7 @@ class Storage:
                     symbol TEXT,
                     timestamp TEXT,
                     indicators TEXT,
-                    entry_price_long REAL,
-                    exit_price_long REAL,
-                    stop_loss_long REAL,
-                    leverage_long TEXT,
-                    entry_price_short REAL,
-                    exit_price_short REAL,
-                    stop_loss_short REAL,
-                    leverage_short TEXT,
-                    support_levels TEXT,
-                    resistance_levels TEXT,
-                    trend_long TEXT,
-                    trend_short TEXT,
-                    risk_reward_long REAL,
-                    risk_reward_short REAL,
-                    comment TEXT
+                    analysis_text TEXT
                 )
             """)
             conn.commit()
@@ -230,32 +192,13 @@ class Storage:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO analyses (
-                        symbol, timestamp, indicators,
-                        entry_price_long, exit_price_long, stop_loss_long, leverage_long,
-                        entry_price_short, exit_price_short, stop_loss_short, leverage_short,
-                        support_levels, resistance_levels, trend_long, trend_short,
-                        risk_reward_long, risk_reward_short, comment
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO analyses (symbol, timestamp, indicators, analysis_text)
+                    VALUES (?, ?, ?, ?)
                 """, (
                     symbol,
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     json.dumps(data['indicators']),
-                    data['deepseek_analysis']['long']['entry_price'],
-                    data['deepseek_analysis']['long']['exit_price'],
-                    data['deepseek_analysis']['long']['stop_loss'],
-                    data['deepseek_analysis']['long']['leverage'],
-                    data['deepseek_analysis']['short']['entry_price'],
-                    data['deepseek_analysis']['short']['exit_price'],
-                    data['deepseek_analysis']['short']['stop_loss'],
-                    data['deepseek_analysis']['short']['leverage'],
-                    json.dumps(data['indicators'].get('support_levels', [0.0, 0.0, 0.0])),
-                    json.dumps(data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])),
-                    data['deepseek_analysis']['long']['trend'],
-                    data['deepseek_analysis']['short']['trend'],
-                    data['deepseek_analysis']['long']['risk_reward_ratio'],
-                    data['deepseek_analysis']['short']['risk_reward_ratio'],
-                    data['deepseek_analysis']['comment']
+                    data['deepseek_analysis']['analysis_text']
                 ))
                 conn.commit()
         except sqlite3.Error as e:
@@ -299,40 +242,9 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
                     'ma200': sma_200.iloc[-1] if sma_200 is not None and not sma_200.empty else 0.0
                 }
 
-                # EMA12 ve EMA26
-                ema_12 = ta.ema(df['close'], length=12) if len(df) >= 12 else None
-                ema_26 = ta.ema(df['close'], length=26) if len(df) >= 26 else None
-                indicators[f'ema_{interval}'] = {
-                    'ema12': ema_12.iloc[-1] if ema_12 is not None and not ema_12.empty else 0.0,
-                    'ema26': ema_26.iloc[-1] if ema_26 is not None and not ema_26.empty else 0.0
-                }
-
-                # SAR
-                sar = ta.psar(df['high'], df['low'], df['close']) if len(df) >= 14 else None
-                indicators[f'sar_{interval}'] = sar['PSARl_0.02_0.2'].iloc[-1] if sar is not None and not sar.empty else 0.0
-
-                # Bollinger Bands
-                bb = ta.bbands(df['close'], length=20, std=2) if len(df) >= 20 else None
-                indicators[f'bb_{interval}'] = {
-                    'upper': bb['BBU_20_2.0'].iloc[-1] if bb is not None and not bb.empty else 0.0,
-                    'lower': bb['BBL_20_2.0'].iloc[-1] if bb is not None and not bb.empty else 0.0
-                }
-
-                # MACD
-                macd = ta.macd(df['close'], fast=12, slow=26, signal=9) if len(df) >= 26 else None
-                indicators[f'macd_{interval}'] = macd['MACD_12_26_9'].iloc[-1] if macd is not None and not macd.empty else 0.0
-
-                # KDJ
-                kdj = ta.kdj(df['high'], df['low'], df['close'], length=9) if len(df) >= 9 else None
-                indicators[f'kdj_{interval}'] = kdj['K_9_3'].iloc[-1] if kdj is not None and not kdj.empty else 0.0
-
                 # RSI
                 rsi = ta.rsi(df['close'], length=14) if len(df) >= 14 else None
                 indicators[f'rsi_{interval}'] = rsi.iloc[-1] if rsi is not None and not rsi.empty else 0.0
-
-                # StochRSI
-                stochrsi = ta.stochrsi(df['close'], length=14) if len(df) >= 14 else None
-                indicators[f'stochrsi_{interval}'] = stochrsi['STOCHRSIk_14_14_3_3'].iloc[-1] if stochrsi is not None and not stochrsi.empty else 0.0
 
                 # ATR
                 atr = ta.atr(df['high'], df['low'], df['close'], length=14) if len(df) >= 14 else None
@@ -356,13 +268,7 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
                 logger.error(f"Error calculating indicators for {symbol} ({interval}): {e}")
                 indicators.update({
                     f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
-                    f'ema_{interval}': {'ema12': 0.0, 'ema26': 0.0},
-                    f'sar_{interval}': 0.0,
-                    f'bb_{interval}': {'upper': 0.0, 'lower': 0.0},
-                    f'macd_{interval}': 0.0,
-                    f'kdj_{interval}': 0.0,
                     f'rsi_{interval}': 0.0,
-                    f'stochrsi_{interval}': 0.0,
                     f'atr_{interval}': 0.0,
                     'support_levels': [0.0, 0.0, 0.0],
                     'resistance_levels': [0.0, 0.0, 0.0]
@@ -371,13 +277,7 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
             logger.warning(f"No kline data for {symbol} ({interval})")
             indicators.update({
                 f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
-                f'ema_{interval}': {'ema12': 0.0, 'ema26': 0.0},
-                f'sar_{interval}': 0.0,
-                f'bb_{interval}': {'upper': 0.0, 'lower': 0.0},
-                f'macd_{interval}': 0.0,
-                f'kdj_{interval}': 0.0,
                 f'rsi_{interval}': 0.0,
-                f'stochrsi_{interval}': 0.0,
                 f'atr_{interval}': 0.0,
                 'support_levels': [0.0, 0.0, 0.0],
                 'resistance_levels': [0.0, 0.0, 0.0]
@@ -469,34 +369,27 @@ class TelegramBot:
             return ASKING_ANALYSIS
 
         response = f"📊 {symbol} için en son analiz ({analysis['timestamp']}):\n"
+        analysis_text = analysis['analysis_text']
         if "trend" in text:
-            response += f"📈 Long Trend: {analysis['trend_long']}\n📉 Short Trend: {analysis['trend_short']}\n"
+            long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', analysis_text, re.DOTALL)
+            short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', analysis_text, re.DOTALL)
+            response += f"📈 Long Trend: {long_trend.group(1) if long_trend else 'Bilinmiyor'}\n"
+            response += f"📉 Short Trend: {short_trend.group(1) if short_trend else 'Bilinmiyor'}\n"
         if "long" in text:
-            response += (
-                f"📈 Long Pozisyon:\n"
-                f"- Giriş: ${analysis['entry_price_long']:.2f}\n"
-                f"- Çıkış: ${analysis['exit_price_long']:.2f}\n"
-                f"- Stop-Loss: ${analysis['stop_loss_long']:.2f}\n"
-                f"- Kaldıraç: {analysis['leverage_long']}\n"
-                f"- Risk/Ödül: {analysis['risk_reward_long']:.2f}\n"
-            )
+            long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', analysis_text, re.DOTALL)
+            response += f"📈 Long Pozisyon:\n{long_match.group(1).strip() if long_match else 'Bilinmiyor'}\n"
         if "short" in text:
-            response += (
-                f"📉 Short Pozisyon:\n"
-                f"- Giriş: ${analysis['entry_price_short']:.2f}\n"
-                f"- Çıkış: ${analysis['exit_price_short']:.2f}\n"
-                f"- Stop-Loss: ${analysis['stop_loss_short']:.2f}\n"
-                f"- Kaldıraç: {analysis['leverage_short']}\n"
-                f"- Risk/Ödül: {analysis['risk_reward_short']:.2f}\n"
-            )
+            short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', analysis_text, re.DOTALL)
+            response += f"📉 Short Pozisyon:\n{short_match.group(1).strip() if short_match else 'Bilinmiyor'}\n"
         if "destek" in text:
-            support_levels = json.loads(analysis['support_levels'])
+            support_levels = json.loads(analysis['indicators'])['support_levels']
             response += f"📍 Destek: {', '.join([f'${x:.2f}' for x in support_levels])}\n"
         if "direnç" in text:
-            resistance_levels = json.loads(analysis['resistance_levels'])
+            resistance_levels = json.loads(analysis['indicators'])['resistance_levels']
             response += f"📍 Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}\n"
         if "yorum" in text or "neden" in text:
-            response += f"💬 Yorum: {analysis['comment'][:500]}\n"
+            comment_match = re.search(r'💬 Yorum:(.*)', analysis_text, re.DOTALL)
+            response += f"💬 Yorum: {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}\n"
 
         await update.message.reply_text(response)
         return ASKING_ANALYSIS
@@ -505,35 +398,6 @@ class TelegramBot:
         """Konuşmayı iptal eder."""
         await update.message.reply_text("❌ Konuşma iptal edildi.")
         return ConversationHandler.END
-
-    def format_results(self, coin_data, symbol):
-        """Analiz sonuçlarını formatlar."""
-        indicators = coin_data.get('indicators', {})
-        analysis = coin_data.get('deepseek_analysis', {})
-        message = (
-            f"📊 {symbol} Vadeli Analiz ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-            f"🔄 Zaman Dilimleri: 5m, 15m, 1h\n"
-            f"📈 Long Pozisyon:\n"
-            f"  - Giriş: ${analysis['long']['entry_price']:.2f}\n"
-            f"  - Çıkış: ${analysis['long']['exit_price']:.2f}\n"
-            f"  - Stop-Loss: ${analysis['long']['stop_loss']:.2f}\n"
-            f"  - Kaldıraç: {analysis['long']['leverage']}\n"
-            f"  - Risk/Ödül: {analysis['long']['risk_reward_ratio']:.2f}\n"
-            f"  - Trend: {analysis['long']['trend']}\n"
-            f"📉 Short Pozisyon:\n"
-            f"  - Giriş: ${analysis['short']['entry_price']:.2f}\n"
-            f"  - Çıkış: ${analysis['short']['exit_price']:.2f}\n"
-            f"  - Stop-Loss: ${analysis['short']['stop_loss']:.2f}\n"
-            f"  - Kaldıraç: {analysis['short']['leverage']}\n"
-            f"  - Risk/Ödül: {analysis['short']['risk_reward_ratio']:.2f}\n"
-            f"  - Trend: {analysis['short']['trend']}\n"
-            f"📍 Destek: {', '.join([f'${x:.2f}' for x in indicators.get('support_levels', [0.0, 0.0, 0.0])])}\n"
-            f"📍 Direnç: {', '.join([f'${x:.2f}' for x in indicators.get('resistance_levels', [0.0, 0.0, 0.0])])}\n"
-            f"⚠️ Volatilite: %{indicators.get('atr_5m', 0.0):.2f} ({'Yüksek, uzak dur!' if indicators.get('atr_5m', 0.0) > 5 else 'Normal'})\n"
-            f"🔗 BTC Korelasyonu: {indicators.get('btc_correlation', 0.0):.2f} ({'Yüksek, dikkat!' if indicators.get('btc_correlation', 0.0) > 0.8 else 'Normal'})\n"
-            f"💬 Yorum: {analysis['comment'][:500]}"
-        )
-        return message
 
     async def process_coin(self, symbol, mexc, chat_id):
         """Coin için analiz yapar."""
@@ -546,7 +410,7 @@ class TelegramBot:
             data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], symbol)
             deepseek = DeepSeekClient()
             data['deepseek_analysis'] = await deepseek.analyze_coin(symbol, data)
-            message = self.format_results(data, symbol)
+            message = data['deepseek_analysis']['analysis_text']
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             self.storage.save_analysis(symbol, data)
             return data
