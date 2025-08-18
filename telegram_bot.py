@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Seçilen coinler
+# Seçilen coinler (OKBUSDT kaldırıldı, çünkü vadeli işlemde mevcut değil)
 COINS = [
-    "OKBUSDT", "ADAUSDT", "DOTUSDT", "XLMUSDT", "LTCUSDT",
+    "ADAUSDT", "DOTUSDT", "XLMUSDT", "LTCUSDT",
     "UNIUSDT", "ATOMUSDT", "CRVUSDT", "TRUMPUSDT", "AAVEUSDT", "BNBUSDT"
 ]
 
@@ -40,28 +40,41 @@ class MEXCClient:
             for interval in ['5m', '15m', '60m']:
                 url = f"{self.base_url}/api/v1/contract/kline/{symbol}?interval=Min_{interval.replace('m', '')}&limit=100"
                 async with session.get(url) as response:
-                    klines[interval] = await response.json() if response.status == 200 else {'data': []}
+                    response_data = await response.json()
+                    klines[interval] = response_data if response.status == 200 and response_data.get('success', False) else {'data': []}
+                    logger.info(f"Kline response for {symbol} ({interval}): {response_data}")
                 await asyncio.sleep(0.5)
 
             order_book_url = f"{self.base_url}/api/v1/contract/depth/{symbol}?limit=10"
             async with session.get(order_book_url) as response:
-                order_book = await response.json() if response.status == 200 else {'bids': [], 'asks': []}
-                logger.info(f"Order book response for {symbol}: {order_book}")  # Debug log
+                order_book = await response.json()
+                if response.status != 200 or not order_book.get('success', False):
+                    order_book = {'bids': [], 'asks': []}
+                logger.info(f"Order book response for {symbol}: {order_book}")
             await asyncio.sleep(0.5)
 
             ticker_url = f"{self.base_url}/api/v1/contract/ticker?symbol={symbol}"
             async with session.get(ticker_url) as response:
-                ticker = await response.json() if response.status == 200 else {'data': {'lastPrice': '0.0'}}
+                ticker = await response.json()
+                if response.status != 200 or not ticker.get('success', False):
+                    ticker = {'data': {'lastPrice': '0.0'}}
+                logger.info(f"Ticker response for {symbol}: {ticker}")
             await asyncio.sleep(0.5)
 
             funding_url = f"{self.base_url}/api/v1/contract/funding_rate/{symbol}"
             async with session.get(funding_url) as response:
-                funding = await response.json() if response.status == 200 else {'data': {'fundingRate': 0.0}}
+                funding = await response.json()
+                if response.status != 200 or not funding.get('success', False):
+                    funding = {'data': {'fundingRate': 0.0}}
+                logger.info(f"Funding rate response for {symbol}: {funding}")
             await asyncio.sleep(0.5)
 
             ticker_24hr_url = f"{self.spot_url}/api/v3/ticker/24hr?symbol={symbol}"
             async with session.get(ticker_24hr_url) as response:
-                ticker_24hr = await response.json() if response.status == 200 else {'priceChangePercent': '0.0'}
+                ticker_24hr = await response.json()
+                if response.status != 200 or 'priceChangePercent' not in ticker_24hr:
+                    ticker_24hr = {'priceChangePercent': '0.0'}
+                logger.info(f"24hr ticker response for {symbol}: {ticker_24hr}")
             await asyncio.sleep(0.5)
 
             btc_data = await self.fetch_btc_data()
@@ -79,14 +92,18 @@ class MEXCClient:
         async with aiohttp.ClientSession() as session:
             url = f"{self.base_url}/api/v1/contract/kline/BTCUSDT?interval=Min_5&limit=100"
             async with session.get(url) as response:
-                return await response.json() if response.status == 200 else {'data': []}
+                response_data = await response.json()
+                logger.info(f"BTC data response: {response_data}")
+                return response_data if response.status == 200 and response_data.get('success', False) else {'data': []}
 
     async def validate_symbol(self, symbol):
         """Sembolü doğrular."""
         async with aiohttp.ClientSession() as session:
             url = f"{self.base_url}/api/v1/contract/ticker?symbol={symbol}"
             async with session.get(url) as response:
-                return response.status == 200
+                response_data = await response.json()
+                logger.info(f"Validate symbol response for {symbol}: {response_data}")
+                return response.status == 200 and response_data.get('success', False)
 
 class DeepSeekClient:
     """DeepSeek API ile analiz yapar."""
@@ -95,6 +112,8 @@ class DeepSeekClient:
 
     def analyze_coin(self, symbol, data):
         """Coin için long/short analizi yapar."""
+        support_levels = data['indicators'].get('support_levels', [0.0, 0.0, 0.0])
+        resistance_levels = data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])
         prompt = f"""
         {symbol} için vadeli işlem analizi yap. Yanıt tamamen Türkçe, 500-5000 karakter olmalı. Aşağıdaki verilere dayanarak long ve short pozisyonlar için giriş, çıkış, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Fonlama oranı > %0.1 ise short pozisyon için risk uyarısı ekle. Doğal ve profesyonel bir üslup kullan.
 
@@ -112,8 +131,8 @@ class DeepSeekClient:
           - StochRSI (5m): {data['indicators']['stochrsi_5m']:.2f}
           - ATR (5m): %{data['indicators']['atr_5m']:.2f}
           - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
-        - Destek Seviyeleri: {', '.join([f'${x:.2f}' for x in data['indicators']['support_levels']])}
-        - Direnç Seviyeleri: {', '.join([f'${x:.2f}' for x in data['indicators']['resistance_levels']])}
+        - Destek Seviyeleri: {', '.join([f'${x:.2f}' for x in support_levels])}
+        - Direnç Seviyeleri: {', '.join([f'${x:.2f}' for x in resistance_levels])}
 
         Çıktı formatı:
         - Long: Giriş: $X, Çıkış: $Y, Stop-Loss: $Z, Kaldıraç: Nx, Risk/Ödül: A:B, Trend: [Yükseliş/Düşüş/Nötr]
@@ -221,8 +240,8 @@ class Storage:
                 data['deepseek_analysis']['short']['exit_price'],
                 data['deepseek_analysis']['short']['stop_loss'],
                 data['deepseek_analysis']['short']['leverage'],
-                json.dumps(data['indicators']['support_levels']),
-                json.dumps(data['indicators']['resistance_levels']),
+                json.dumps(data['indicators'].get('support_levels', [0.0, 0.0, 0.0])),
+                json.dumps(data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])),
                 data['deepseek_analysis']['long']['trend'],
                 data['deepseek_analysis']['short']['trend'],
                 data['deepseek_analysis']['long']['risk_reward_ratio'],
@@ -275,7 +294,6 @@ def calculate_indicators(kline_data, order_book, btc_data):
                 fib['FIBU_0.236'].iloc[-1] if not fib.empty else df['close'].iloc[-1] * 1.10,
                 fib['FIBU_0.382'].iloc[-1] if not fib.empty else df['close'].iloc[-1] * 1.15
             ]
-
         else:
             indicators.update({
                 f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
@@ -286,7 +304,9 @@ def calculate_indicators(kline_data, order_book, btc_data):
                 f'kdj_{interval}': 0.0,
                 f'rsi_{interval}': 0.0,
                 f'stochrsi_{interval}': 0.0,
-                f'atr_{interval}': 0.0
+                f'atr_{interval}': 0.0,
+                'support_levels': [0.0, 0.0, 0.0],
+                'resistance_levels': [0.0, 0.0, 0.0]
             })
 
     if order_book.get('bids') and order_book.get('asks'):
@@ -340,7 +360,7 @@ class TelegramBot:
         self.active_analyses[analysis_key] = True
         mexc = MEXCClient()
         if not await mexc.validate_symbol(symbol):
-            await query.message.reply_text(f"Hata: {symbol} geçersiz.")
+            await query.message.reply_text(f"Hata: {symbol} vadeli işlemde mevcut değil.")
             del self.active_analyses[analysis_key]
             return
         await query.message.reply_text(f"{symbol} için vadeli işlem analizi yapılıyor...")
@@ -351,6 +371,8 @@ class TelegramBot:
         """Analiz sonuçlarını formatlar."""
         indicators = coin_data.get('indicators', {})
         analysis = coin_data.get('deepseek_analysis', {})
+        support_levels = indicators.get('support_levels', [0.0, 0.0, 0.0])
+        resistance_levels = indicators.get('resistance_levels', [0.0, 0.0, 0.0])
         message = (
             f"📊 {symbol} Vadeli Analiz ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
             f"🔄 Zaman Dilimleri: 5m, 15m, 1h\n"
@@ -368,8 +390,8 @@ class TelegramBot:
             f"  - Kaldıraç: {analysis['short']['leverage']}\n"
             f"  - Risk/Ödül: {analysis['short']['risk_reward_ratio']:.2f}\n"
             f"  - Trend: {analysis['short']['trend']}\n"
-            f"📍 Destek: {', '.join([f'${x:.2f}' for x in indicators.get('support_levels', [])])}\n"
-            f"📍 Direnç: {', '.join([f'${x:.2f}' for x in indicators.get('resistance_levels', [])])}\n"
+            f"📍 Destek: {', '.join([f'${x:.2f}' for x in support_levels])}\n"
+            f"📍 Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}\n"
             f"⚠️ Volatilite: %{indicators.get('atr_5m', 0.0):.2f} ({'Yüksek, uzak dur!' if indicators.get('atr_5m', 0.0) > 5 else 'Normal'})\n"
             f"🔗 BTC Korelasyonu: {indicators.get('btc_correlation', 0.0):.2f} ({'Yüksek, dikkat!' if indicators.get('btc_correlation', 0.0) > 0.8 else 'Normal'})\n"
             f"💬 Yorum: {analysis['comment'][:500]}"
@@ -379,8 +401,8 @@ class TelegramBot:
     async def process_coin(self, symbol, mexc, chat_id):
         """Coin için analiz yapar."""
         data = await mexc.fetch_market_data(symbol)
-        if not data or not any(data.get('klines', {}).get(interval) for interval in ['5m', '15m', '60m']):
-            await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için veri yok.")
+        if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m']):
+            await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için veri yok veya vadeli işlem mevcut değil.")
             return None
 
         data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'])
