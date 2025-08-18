@@ -6,7 +6,7 @@ import asyncio
 import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
-from openai import OpenAI
+from openai import AsyncOpenAI
 from aiohttp import web
 from dotenv import load_dotenv
 from datetime import datetime
@@ -96,7 +96,7 @@ class MEXCClient:
 class DeepSeekClient:
     """DeepSeek API ile analiz yapar."""
     def __init__(self):
-        self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
+        self.client = AsyncOpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
 
     async def analyze_coin(self, symbol, data):
         """Coin için long/short analizi yapar."""
@@ -146,57 +146,43 @@ class DeepSeekClient:
                     max_tokens=2000,
                     stream=False
                 ),
-                timeout=10.0
+                timeout=120.0  # 2 dakika
             )
             analysis_text = response.choices[0].message.content
             if len(analysis_text) < 500:
                 analysis_text += " " * (500 - len(analysis_text))
-            return {
-                'long': self.parse_response(analysis_text, data['price'], 'long'),
-                'short': self.parse_response(analysis_text, data['price'], 'short'),
-                'comment': analysis_text
-            }
-        except asyncio.TimeoutError:
-            logger.error(f"DeepSeek API timeout for {symbol}")
-            return {
-                'long': {'entry_price': data['price'], 'exit_price': data['price'] * 1.02, 'stop_loss': data['price'] * 0.98, 'leverage': '3x', 'risk_reward_ratio': 1.0, 'trend': 'Nötr'},
-                'short': {'entry_price': data['price'], 'exit_price': data['price'] * 0.98, 'stop_loss': data['price'] * 1.02, 'leverage': '3x', 'risk_reward_ratio': 1.0, 'trend': 'Nötr'},
-                'comment': f"Analiz yapılamadı: DeepSeek API zaman aşımına uğradı."
-            }
-        except Exception as e:
+            parsed = self.parse_response(analysis_text, data['price'])
+            if not parsed['long']['entry_price'] or not parsed['short']['entry_price']:
+                raise ValueError("DeepSeek yanıtı eksik veya geçersiz.")
+            return parsed
+        except (asyncio.TimeoutError, ValueError, Exception) as e:
             logger.error(f"DeepSeek API error for {symbol}: {e}")
-            return {
-                'long': {'entry_price': data['price'], 'exit_price': data['price'] * 1.02, 'stop_loss': data['price'] * 0.98, 'leverage': '3x', 'risk_reward_ratio': 1.0, 'trend': 'Nötr'},
-                'short': {'entry_price': data['price'], 'exit_price': data['price'] * 0.98, 'stop_loss': data['price'] * 1.02, 'leverage': '3x', 'risk_reward_ratio': 1.0, 'trend': 'Nötr'},
-                'comment': f"Analiz yapılamadı: {str(e)}"
-            }
+            raise Exception(f"DeepSeek API'den veri alınamadı: {str(e)}")
 
-    def parse_response(self, text, current_price, position):
+    def parse_response(self, text, current_price):
         """DeepSeek yanıtını ayrıştırır."""
         result = {
-            'entry_price': current_price,
-            'exit_price': current_price * (1.02 if position == 'long' else 0.98),
-            'stop_loss': current_price * (0.98 if position == 'long' else 1.02),
-            'leverage': '3x',
-            'risk_reward_ratio': 1.0,
-            'trend': 'Nötr'
+            'long': {'entry_price': None, 'exit_price': None, 'stop_loss': None, 'leverage': '3x', 'risk_reward_ratio': None, 'trend': 'Nötr'},
+            'short': {'entry_price': None, 'exit_price': None, 'stop_loss': None, 'leverage': '3x', 'risk_reward_ratio': None, 'trend': 'Nötr'},
+            'comment': text
         }
         lines = text.split('\n')
         for line in lines:
             line = line.strip().lower()
             number_match = re.search(r'\d+\.?\d*', line)
-            if f'{position}: giriş' in line and number_match:
-                result['entry_price'] = float(number_match.group(0))
-            elif f'{position}: çıkış' in line and number_match:
-                result['exit_price'] = float(number_match.group(0))
-            elif f'{position}: stop-loss' in line and number_match:
-                result['stop_loss'] = float(number_match.group(0))
-            elif f'{position}: kaldıraç' in line:
-                result['leverage'] = line.split(':')[1].strip() if ':' in line else '3x'
-            elif f'{position}: risk/ödül' in line and number_match:
-                result['risk_reward_ratio'] = float(number_match.group(0))
-            elif f'{position}: trend' in line:
-                result['trend'] = line.split(':')[1].strip() if ':' in line else 'Nötr'
+            for position in ['long', 'short']:
+                if f'{position}: giriş' in line and number_match:
+                    result[position]['entry_price'] = float(number_match.group(0))
+                elif f'{position}: çıkış' in line and number_match:
+                    result[position]['exit_price'] = float(number_match.group(0))
+                elif f'{position}: stop-loss' in line and number_match:
+                    result[position]['stop_loss'] = float(number_match.group(0))
+                elif f'{position}: kaldıraç' in line:
+                    result[position]['leverage'] = line.split(':')[1].strip() if ':' in line else '3x'
+                elif f'{position}: risk/ödül' in line and number_match:
+                    result[position]['risk_reward_ratio'] = float(number_match.group(0))
+                elif f'{position}: trend' in line:
+                    result[position]['trend'] = line.split(':')[1].strip() if ':' in line else 'Nötr'
         return result
 
 class Storage:
@@ -470,7 +456,7 @@ class TelegramBot:
                 symbol = coin
                 break
         if not symbol:
-            await update.message.reply_text("🔍 Lütfen geçerli bir coin sembolü belirtin (örn: LTCUSDT).")
+            await update.message.reply_text("🔍 Lütfen geçerli bir coin sembolü belirtin (örn: ADAUSDT).")
             return ASKING_ANALYSIS
 
         analysis = self.storage.get_previous_analysis(symbol)
