@@ -15,6 +15,7 @@ import sqlite3
 import re
 import numpy as np
 import json
+from datetime import timedelta
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -45,7 +46,7 @@ class MEXCClient:
         try:
             klines = {}
             for interval in ['5m', '15m', '60m']:
-                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"  # Limit 100'e düşürüldü
+                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
                 async with self.session.get(url) as response:
                     response_data = await response.json() if response.status == 200 else []
                     klines[interval] = {'data': response_data}
@@ -128,7 +129,7 @@ class DeepSeekClient:
           - ATR (5m): %{data['indicators']['atr_5m']:.2f}
           - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
         - Destek: {', '.join([f'${x:.2f}' for x in support_levels])}
-        - Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])uzie
+        - Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
 
         Çıktı formatı:
         📊 {symbol} Vadeli Analiz ({datetime.now().strftime('%Y-%m-%d %H:%M')})
@@ -161,7 +162,7 @@ class DeepSeekClient:
                     max_tokens=1000,
                     stream=False
                 ),
-                timeout=180.0  # Timeout artırıldı
+                timeout=180.0
             )
             analysis_text = response.choices[0].message.content
             logger.info(f"DeepSeek raw response for {symbol}: {analysis_text}")
