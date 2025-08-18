@@ -45,25 +45,25 @@ class MEXCClient:
                     response_data = await response.json() if response.status == 200 else []
                     klines[interval] = {'data': response_data}
                     logger.info(f"Kline response for {symbol} ({interval}): {response_data[:1]}...")
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
 
             order_book_url = f"{self.spot_url}/api/v3/depth?symbol={symbol}&limit=10"
             async with session.get(order_book_url) as response:
                 order_book = await response.json() if response.status == 200 else {'bids': [], 'asks': []}
                 logger.info(f"Order book response for {symbol}: {order_book}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
 
             ticker_url = f"{self.spot_url}/api/v3/ticker/price?symbol={symbol}"
             async with session.get(ticker_url) as response:
                 ticker = await response.json() if response.status == 200 else {'price': '0.0'}
                 logger.info(f"Ticker response for {symbol}: {ticker}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
 
             ticker_24hr_url = f"{self.spot_url}/api/v3/ticker/24hr?symbol={symbol}"
             async with session.get(ticker_24hr_url) as response:
                 ticker_24hr = await response.json() if response.status == 200 else {'priceChangePercent': '0.0'}
                 logger.info(f"24hr ticker response for {symbol}: {ticker_24hr}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
 
             btc_data = await self.fetch_btc_data()
             return {
@@ -98,12 +98,12 @@ class DeepSeekClient:
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
 
-    def analyze_coin(self, symbol, data):
+    async def analyze_coin(self, symbol, data):
         """Coin için long/short analizi yapar."""
         support_levels = data['indicators'].get('support_levels', [0.0, 0.0, 0.0])
         resistance_levels = data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-5000 karakter. Aşağıdaki verilere dayanarak giriş, çıkış, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan.
+        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-2000 karakter. Aşağıdaki verilere dayanarak giriş, çıkış, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan.
 
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
@@ -139,12 +139,14 @@ class DeepSeekClient:
         💬 Yorum: [Detaylı analiz ve gerekçe]
         """
         try:
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=5000,
-                stream=False,
-                timeout=15  # DeepSeek API için zaman aşımı
+            response = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2000,
+                    stream=False
+                ),
+                timeout=10.0
             )
             analysis_text = response.choices[0].message.content
             if len(analysis_text) < 500:
@@ -153,6 +155,13 @@ class DeepSeekClient:
                 'long': self.parse_response(analysis_text, data['price'], 'long'),
                 'short': self.parse_response(analysis_text, data['price'], 'short'),
                 'comment': analysis_text
+            }
+        except asyncio.TimeoutError:
+            logger.error(f"DeepSeek API timeout for {symbol}")
+            return {
+                'long': {'entry_price': data['price'], 'exit_price': data['price'] * 1.02, 'stop_loss': data['price'] * 0.98, 'leverage': '3x', 'risk_reward_ratio': 1.0, 'trend': 'Nötr'},
+                'short': {'entry_price': data['price'], 'exit_price': data['price'] * 0.98, 'stop_loss': data['price'] * 1.02, 'leverage': '3x', 'risk_reward_ratio': 1.0, 'trend': 'Nötr'},
+                'comment': f"Analiz yapılamadı: DeepSeek API zaman aşımına uğradı."
             }
         except Exception as e:
             logger.error(f"DeepSeek API error for {symbol}: {e}")
@@ -428,7 +437,7 @@ class TelegramBot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Coin butonlarını gösterir."""
         keyboard = [[InlineKeyboardButton(coin, callback_data=f"analyze_{coin}")] for coin in COINS]
-        await update.message.reply_text("Vadeli işlem analizi için coin seç:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text("📈 Vadeli işlem analizi için coin seç:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Buton tıklamalarını işler."""
@@ -440,16 +449,16 @@ class TelegramBot:
         symbol = query.data.replace("analyze_", "")
         analysis_key = f"{symbol}_futures_{update.effective_chat.id}"
         if analysis_key in self.active_analyses:
-            await query.message.reply_text(f"{symbol} için analiz yapılıyor, bekleyin.")
+            await query.message.reply_text(f"⏳ {symbol} için analiz yapılıyor, bekleyin.")
             return
         self.active_analyses[analysis_key] = True
         mexc = MEXCClient()
         if not await mexc.validate_symbol(symbol):
-            await query.message.reply_text(f"Hata: {symbol} spot piyasasında mevcut değil.")
+            await query.message.reply_text(f"❌ Hata: {symbol} spot piyasasında mevcut değil.")
             del self.active_analyses[analysis_key]
             return
-        await query.message.reply_text(f"{symbol} için vadeli işlem analizi yapılıyor...")
-        data = await self.process_coin(symbol, mexc, update.effective_chat.id)
+        await query.message.reply_text(f"🔍 {symbol} için vadeli işlem analizi yapılıyor...")
+        asyncio.create_task(self.process_coin(symbol, mexc, update.effective_chat.id))  # Asenkron görev
         del self.active_analyses[analysis_key]
 
     async def handle_analysis_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -461,12 +470,12 @@ class TelegramBot:
                 symbol = coin
                 break
         if not symbol:
-            await update.message.reply_text("Lütfen geçerli bir coin sembolü belirtin (örn: DOTUSDT).")
+            await update.message.reply_text("🔍 Lütfen geçerli bir coin sembolü belirtin (örn: LTCUSDT).")
             return ASKING_ANALYSIS
 
         analysis = self.storage.get_previous_analysis(symbol)
         if not analysis:
-            await update.message.reply_text(f"{symbol} için önceki analiz bulunamadı. Yeni analiz yapmamı ister misiniz?")
+            await update.message.reply_text(f"❌ {symbol} için önceki analiz bulunamadı. Yeni analiz yapmamı ister misiniz?")
             return ASKING_ANALYSIS
 
         response = f"📊 {symbol} için en son analiz ({analysis['timestamp']}):\n"
@@ -504,7 +513,7 @@ class TelegramBot:
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Konuşmayı iptal eder."""
-        await update.message.reply_text("Konuşma iptal edildi.")
+        await update.message.reply_text("❌ Konuşma iptal edildi.")
         return ConversationHandler.END
 
     def format_results(self, coin_data, symbol):
@@ -541,19 +550,19 @@ class TelegramBot:
         try:
             data = await mexc.fetch_market_data(symbol)
             if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m']):
-                await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} için veri yok.")
+                await self.app.bot.send_message(chat_id=chat_id, text=f"❌ {symbol} için veri yok.")
                 return None
 
             data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], symbol)
             deepseek = DeepSeekClient()
-            data['deepseek_analysis'] = deepseek.analyze_coin(symbol, data)
+            data['deepseek_analysis'] = await deepseek.analyze_coin(symbol, data)
             message = self.format_results(data, symbol)
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             self.storage.save_analysis(symbol, data)
             return data
         except Exception as e:
             logger.error(f"Error processing coin {symbol}: {e}")
-            await self.app.bot.send_message(chat_id=chat_id, text=f"{symbol} analizi sırasında hata: {str(e)}")
+            await self.app.bot.send_message(chat_id=chat_id, text=f"❌ {symbol} analizi sırasında hata: {str(e)}")
             return None
 
     async def run(self):
