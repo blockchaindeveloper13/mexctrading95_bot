@@ -34,7 +34,9 @@ COINS = {
     "CRVUSDT": ["crv", "crvusdt"],
     "TRUMPUSDT": ["trump", "trumpusdt"],
     "AAVEUSDT": ["aave", "aaveusdt"],
-    "BNBUSDT": ["bnb", "bnbusdt"]
+    "BNBUSDT": ["bnb", "bnbusdt"],
+    "ETHUSDT": ["eth", "ethusdt", "ethereum"],
+    "BTCUSDT": ["btc", "btcusdt", "bitcoin"]
 }
 
 class MEXCClient:
@@ -80,13 +82,15 @@ class MEXCClient:
             await asyncio.sleep(0.2)
 
             btc_data = await self.fetch_btc_data()
+            eth_data = await self.fetch_eth_data()
             return {
                 'klines': klines,
                 'order_book': order_book,
                 'price': float(ticker.get('price', 0.0)),
                 'funding_rate': 0.0,  # Spot'ta fonlama oranı yok
                 'price_change_24hr': float(ticker_24hr.get('priceChangePercent', 0.0)),
-                'btc_data': btc_data
+                'btc_data': btc_data,
+                'eth_data': eth_data
             }
         finally:
             await self.close()
@@ -99,6 +103,16 @@ class MEXCClient:
             async with self.session.get(url) as response:
                 response_data = await response.json() if response.status == 200 else []
                 logger.info(f"BTC data response: {response_data[:1]}...")
+                return {'data': response_data}
+
+    async def fetch_eth_data(self):
+        """ETH/USDT spot verilerini çeker."""
+        await self.initialize()
+        async with self.session:
+            url = f"{self.spot_url}/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=100"
+            async with self.session.get(url) as response:
+                response_data = await response.json() if response.status == 200 else []
+                logger.info(f"ETH data response: {response_data[:1]}...")
                 return {'data': response_data}
 
     async def validate_symbol(self, symbol):
@@ -127,7 +141,7 @@ class DeepSeekClient:
         support_levels = data['indicators'].get('support_levels', [0.0, 0.0, 0.0])
         resistance_levels = data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit (çıkış), stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Her alan için tam bir sayı veya metin zorunlu.
+        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit (çıkış), stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Her alan için tam bir sayı veya metin zorunlu.
 
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
@@ -136,6 +150,7 @@ class DeepSeekClient:
           - RSI (5m): {data['indicators']['rsi_5m']:.2f}
           - ATR (5m): %{data['indicators']['atr_5m']:.2f}
           - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
+          - ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f}
         - Destek: {', '.join([f'${x:.2f}' for x in support_levels])}
         - Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
 
@@ -160,6 +175,7 @@ class DeepSeekClient:
         📍 Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
         ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
         🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
+        🔗 ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['eth_correlation'] > 0.8 else 'Normal'})
         💬 Yorum: [Analiz süreci, hangi göstergelere dayandığı, giriş/take-profit/stop-loss seçim gerekçesi]
         """
         try:
@@ -196,7 +212,7 @@ class DeepSeekClient:
     async def generate_natural_response(self, user_message, context_info, symbol=None):
         """Doğal dil yanıtı üretir."""
         prompt = f"""
-        Türkçe, samimi ve esprili bir şekilde, bir insan gibi yanıt ver. Kullanıcıya 'dostum' gibi hitap et ve mesajına uygun, akıcı bir üslup kullan. Eğer sembol ({symbol}) varsa, bağlama uygun şekilde atıfta bulun. Konuşma geçmişini ve son analizi dikkate al. Maksimum 200 karakter. Emoji kullan, hata mesajlarından kaçın.
+        Türkçe, ultra samimi ve esprili bir şekilde yanıt ver. Kullanıcıya 'kanka' diye hitap et, hafif argo kullan ama abartma. Mesajına uygun, akıcı ve doğal bir muhabbet kur. Eğer sembol ({symbol}) varsa, bağlama uygun şekilde atıfta bulun ve BTC/ETH korelasyonlarını vurgula. Konuşma geçmişini ve son analizi dikkate al. Maksimum 200 karakter. Hata mesajlarından kaçın, her zaman muhabbeti devam ettir!
 
         Kullanıcı mesajı: {user_message}
         Bağlam: {context_info}
@@ -214,10 +230,10 @@ class DeepSeekClient:
             return response.choices[0].message.content
         except asyncio.TimeoutError:
             logger.error(f"DeepSeek API timeout for natural response")
-            return "😓 Dostum, biraz yavaş kaldık, ama merak etme, hemen toparlarız! Ne sorcan?"
+            return "😂 Kanka, internet nazlandı, bi’ daha sor bakalım!"
         except Exception as e:
             logger.error(f"DeepSeek natural response error: {e}")
-            return "😅 Dostum, neyi kastediyosun, biraz açar mısın? Hadi, muhabbete devam!"
+            return "😅 Kanka, neyi kastediyosun, bi’ açar mısın? Hadi, muhabbet edelim!"
 
 class Storage:
     """Analizleri ve konuşma geçmişini SQLite’ta depolar."""
@@ -367,13 +383,14 @@ class TelegramBot:
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message))
         self.active_analyses = {}
         self.shutdown_event = asyncio.Event()
+        self.is_running = False
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Coin butonlarını gösterir."""
         keyboard = [[InlineKeyboardButton(coin, callback_data=f"analyze_{coin}")] for coin in COINS.keys()]
         response = (
-            "📈 Hadi bakalım, dostum! Coin analizi mi yapalım, yoksa başka ne muhabbeti çevirelim? 😎\n"
-            "Örnek: 'OKB analiz', 'nasılsın', 'geçmiş'.\n"
+            "📈 Kanka, hadi bakalım! Coin analizi mi yapalım, yoksa başka muhabbet mi çevirelim? 😎\n"
+            "Örnek: 'ADA analiz', 'nasılsın', 'geçmiş', 'BTC korelasyonu'.\n"
         )
         await update.message.reply_text(response, reply_markup=InlineKeyboardMarkup(keyboard))
         self.storage.save_conversation(update.effective_chat.id, update.message.text, response)
@@ -388,14 +405,14 @@ class TelegramBot:
         symbol = query.data.replace("analyze_", "")
         analysis_key = f"{symbol}_futures_{update.effective_chat.id}"
         if analysis_key in self.active_analyses:
-            response = f"⏳ {symbol} için analiz yapılıyor, biraz sabret dostum! 😅"
+            response = f"⏳ Kanka, {symbol} için analiz yapıyorum, az sabret! 😅"
             await query.message.reply_text(response)
             self.storage.save_conversation(update.effective_chat.id, query.data, response, symbol)
             return
         self.active_analyses[analysis_key] = True
         try:
             if not await self.mexc.validate_symbol(symbol):
-                response = f"😓 Dostum, {symbol} piyasada yok gibi. Başka coin mi bakalım?"
+                response = f"😓 Kanka, {symbol} piyasada yok gibi. Başka coin mi bakalım?"
                 await query.message.reply_text(response)
                 self.storage.save_conversation(update.effective_chat.id, query.data, response, symbol)
                 return
@@ -422,7 +439,7 @@ class TelegramBot:
         if "geçmiş" in text:
             history = self.storage.get_conversation_history(chat_id, limit=10)
             if not history:
-                response = "📜 Dostum, henüz muhabbet geçmişimiz yok. Hadi başlayalım! 😎"
+                response = "📜 Kanka, henüz muhabbet geçmişimiz yok. Hadi başlayalım! 😎"
             else:
                 response = "📜 Son muhabbetler:\n"
                 for entry in history:
@@ -448,7 +465,7 @@ class TelegramBot:
                 logger.info(f"Using last symbol {symbol} from conversation history")
 
         # Anahtar kelimeler
-        keywords = ['analiz', 'trend', 'long', 'short', 'destek', 'direnç', 'yorum', 'neden']
+        keywords = ['analiz', 'trend', 'long', 'short', 'destek', 'direnç', 'yorum', 'neden', 'korelasyon']
         matched_keyword = next((k for k in keywords if k in text), None)
 
         # Doğal dil yanıtı için bağlam
@@ -458,14 +475,14 @@ class TelegramBot:
         if matched_keyword == 'analiz' and symbol:
             analysis_key = f"{symbol}_futures_{chat_id}"
             if analysis_key in self.active_analyses:
-                response = f"⏳ {symbol} için analiz yapıyorum, az bekle dostum! 😅"
+                response = f"⏳ Kanka, {symbol} için analiz yapıyorum, az bekle! 😅"
                 await update.message.reply_text(response)
                 self.storage.save_conversation(chat_id, text, response, symbol)
                 return
             self.active_analyses[analysis_key] = True
             try:
                 if not await self.mexc.validate_symbol(symbol):
-                    response = f"😓 Dostum, {symbol} piyasada yok gibi. Başka coin mi bakalım?"
+                    response = f"😓 Kanka, {symbol} piyasada yok gibi. Başka coin mi bakalım?"
                     await update.message.reply_text(response)
                     self.storage.save_conversation(chat_id, text, response, symbol)
                     return
@@ -479,6 +496,21 @@ class TelegramBot:
                 del self.active_analyses[analysis_key]
             return
 
+        # Korelasyon sorusu
+        if matched_keyword == 'korelasyon' and symbol:
+            current_analysis = self.storage.get_latest_analysis(symbol)
+            response = await self.deepseek.generate_natural_response(text, context_info, symbol)
+            if current_analysis:
+                btc_corr = re.search(r'🔗 BTC Korelasyonu: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                eth_corr = re.search(r'🔗 ETH Korelasyonu: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
+                response += f"\n🔗 BTC Korelasyon: {btc_corr.group(1) if btc_corr else 'Bilinmiyor'}"
+                response += f"\n🔗 ETH Korelasyon: {eth_corr.group(1) if eth_corr else 'Bilinmiyor'}"
+            else:
+                response += f"\n😅 Kanka, {symbol} için analiz yok. Hemen yapayım mı? (örn: {symbol} analiz)"
+            await update.message.reply_text(response)
+            self.storage.save_conversation(chat_id, text, response, symbol)
+            return
+
         # Diğer anahtar kelimeler veya sembol varsa
         if symbol and matched_keyword:
             current_analysis = self.storage.get_latest_analysis(symbol)
@@ -487,13 +519,13 @@ class TelegramBot:
                 if matched_keyword == 'trend':
                     long_trend = re.search(r'📈 Long Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
                     short_trend = re.search(r'📉 Short Pozisyon:.*?Trend: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
-                    response += f"\n📈 Long Trend: {long_trend.group(1) if long_trend else 'Bilinmiyor'}\n📉 Short Trend: {short_trend.group(1) if short_trend else 'Bilinmiyor'}"
+                    response += f"\n📈 Long: {long_trend.group(1) if long_trend else 'Bilinmiyor'}\n📉 Short: {short_trend.group(1) if short_trend else 'Bilinmiyor'}"
                 elif matched_keyword == 'long':
                     long_match = re.search(r'📈 Long Pozisyon:(.*?)(?:📉|$)', current_analysis, re.DOTALL)
-                    response += f"\n📈 Long Pozisyon:\n{long_match.group(1).strip() if long_match else 'Bilinmiyor'}"
+                    response += f"\n📈 Long: {long_match.group(1).strip() if long_match else 'Bilinmiyor'}"
                 elif matched_keyword == 'short':
                     short_match = re.search(r'📉 Short Pozisyon:(.*?)(?:💬|$)', current_analysis, re.DOTALL)
-                    response += f"\n📉 Short Pozisyon:\n{short_match.group(1).strip() if short_match else 'Bilinmiyor'}"
+                    response += f"\n📉 Short: {short_match.group(1).strip() if short_match else 'Bilinmiyor'}"
                 elif matched_keyword == 'destek':
                     support_match = re.search(r'📍 Destek: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
                     response += f"\n📍 Destek: {support_match.group(1) if support_match else 'Bilinmiyor'}"
@@ -504,7 +536,7 @@ class TelegramBot:
                     comment_match = re.search(r'💬 Yorum:(.*)', current_analysis, re.DOTALL)
                     response += f"\n💬 Yorum: {comment_match.group(1).strip()[:500] if comment_match else 'Bilinmiyor'}"
             else:
-                response += f"\n😅 {symbol} için henüz analiz yok. Hemen yapmamı ister misin? (örn: {symbol} analiz)"
+                response += f"\n😅 Kanka, {symbol} için analiz yok. Hemen yapayım mı? (örn: {symbol} analiz)"
             await update.message.reply_text(response)
             self.storage.save_conversation(chat_id, text, response, symbol)
             return
@@ -519,11 +551,11 @@ class TelegramBot:
         try:
             data = await self.mexc.fetch_market_data(symbol)
             if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m']):
-                response = f"😓 Dostum, {symbol} için veri bulamadım. Başka coin mi bakalım?"
+                response = f"😓 Kanka, {symbol} için veri bulamadım. Başka coin mi bakalım?"
                 await self.app.bot.send_message(chat_id=chat_id, text=response)
                 self.storage.save_conversation(chat_id, symbol, response, symbol)
                 return
-            data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], symbol)
+            data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], data['eth_data'], symbol)
             data['deepseek_analysis'] = await self.deepseek.analyze_coin(symbol, data)
             message = data['deepseek_analysis']['analysis_text']
             await self.app.bot.send_message(chat_id=chat_id, text=message)
@@ -532,7 +564,7 @@ class TelegramBot:
             return data
         except Exception as e:
             logger.error(f"Error processing coin {symbol}: {e}")
-            response = f"😅 Dostum, {symbol} analizi yaparken bir şeyler ters gitti. Tekrar deneyelim mi?"
+            response = f"😅 Kanka, {symbol} analizi yaparken bi’ şeyler ters gitti. Tekrar deneyelim mi?"
             await self.app.bot.send_message(chat_id=chat_id, text=response)
             self.storage.save_conversation(chat_id, symbol, response, symbol)
             return
@@ -541,6 +573,7 @@ class TelegramBot:
         """Webhook sunucusunu başlatır."""
         try:
             logger.info("Starting application...")
+            self.is_running = True
             await self.mexc.initialize()
             await self.app.initialize()
             await self.app.start()
@@ -559,8 +592,13 @@ class TelegramBot:
         finally:
             logger.info("Shutting down application...")
             await self.mexc.close()
-            await self.app.stop()
-            await self.app.shutdown()
+            if self.is_running:
+                try:
+                    await self.app.stop()
+                    await self.app.shutdown()
+                except RuntimeError as e:
+                    logger.warning(f"Error during shutdown: {e}")
+                self.is_running = False
             logger.info("Application shut down")
 
     async def webhook_handler(self, request):
@@ -575,7 +613,7 @@ class TelegramBot:
             logger.error(f"Error handling webhook: {e}")
             return web.Response(text="Error", status=500)
 
-def calculate_indicators(kline_data, order_book, btc_data, symbol):
+def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     """Teknik göstergeleri hesaplar."""
     indicators = {}
     for interval in ['5m', '15m', '60m']:
@@ -641,6 +679,7 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
         indicators['bid_ask_ratio'] = 0.0
         logger.warning(f"Order book for {symbol} has no bids or asks")
 
+    # BTC korelasyonu
     if btc_data.get('data') and len(btc_data['data']) > 1:
         btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
         btc_df['close'] = btc_df['close'].astype(float)
@@ -654,6 +693,20 @@ def calculate_indicators(kline_data, order_book, btc_data, symbol):
     else:
         indicators['btc_correlation'] = 0.0
 
+    # ETH korelasyonu
+    if eth_data.get('data') and len(eth_data['data']) > 1:
+        eth_df = pd.DataFrame(eth_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+        eth_df['close'] = eth_df['close'].astype(float)
+        if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
+            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+            coin_df['close'] = coin_df['close'].astype(float)
+            correlation = coin_df['close'].corr(eth_df['close'])
+            indicators['eth_correlation'] = correlation if not np.isnan(correlation) else 0.0
+        else:
+            indicators['eth_correlation'] = 0.0
+    else:
+        indicators['eth_correlation'] = 0.0
+
     return indicators
 
 def main():
@@ -662,9 +715,6 @@ def main():
     def handle_sigterm(*args):
         logger.info("Received SIGTERM, shutting down...")
         bot.shutdown_event.set()
-        asyncio.create_task(bot.mexc.close())
-        asyncio.create_task(bot.app.stop())
-        asyncio.create_task(bot.app.shutdown())
 
     signal.signal(signal.SIGTERM, handle_sigterm)
     asyncio.run(bot.run())
