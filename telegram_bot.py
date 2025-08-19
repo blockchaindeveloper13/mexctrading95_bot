@@ -281,6 +281,7 @@ class DeepSeekClient:
 
         prompt = (
             f"{symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, detaylı ama kısa (maks 3000 karakter) olmalı. 😎 "
+            f"KALIN YAZI İÇİN ** KULLANMA, bunun yerine düz metin veya emoji kullan. 🚫 "
             f"Sadece tek bir long ve short pozisyon önerisi sun (giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini). "
             f"Değerler tamamen senin analizine dayansın, kodda hesaplama yapılmasın. 🧠 "
             f"Toplu değerlendirme (yorum) detaylı, emoji dolu ve samimi olsun, ama özlü yaz (maks 1500 karakter). 🎉 "
@@ -328,14 +329,14 @@ class DeepSeekClient:
             f"Volatilite: {data['indicators']['atr_5m']:.2f}% ({'Yüksek, uzak dur! 😱' if data['indicators']['atr_5m'] > 5 else 'Normal 😎'}) ⚡\n"
             f"BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat! ⚠️' if data['indicators']['btc_correlation'] > 0.8 else 'Normal 😎'}) 🤝\n"
             f"ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat! ⚠️' if data['indicators']['eth_correlation'] > 0.8 else 'Normal 😎'}) 🤝\n"
-            f"Yorum: [Kısa, öz ama detaylı açıkla, hangi göstergelere dayandığını, giriş/take-profit/stop-loss seçim gerekçesini, yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı belirt, emoji kullan, samimi ol! 🎉 Maks 1500 karakter.]\n"
+            f"Yorum: [Kısa, öz ama detaylı açıkla, hangi göstergelere dayandığını, giriş/take-profit/stop-loss seçim gerekçesini, yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı belirt, emoji kullan, samimi ol! 🎉 Maks 1500 karakter. KALIN YAZI İÇİN ** KULLANMA! 🚫]\n"
         )
         try:
             response = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=3000,  # Toplam mesaj uzunluğu için sınır
+                    max_tokens=3000,
                     stream=False
                 ),
                 timeout=180.0
@@ -360,6 +361,7 @@ class DeepSeekClient:
     async def generate_natural_response(self, user_message, context_info, symbol=None):
         prompt = (
             f"Türkçe, ultra samimi ve esprili bir şekilde yanıt ver. Kullanıcıya 'kanka' diye hitap et, hafif argo kullan ama abartma. 😎 "
+            f"KALIN YAZI İÇİN ** KULLANMA, bunun yerine düz metin veya emoji kullan. 🚫 "
             f"Mesajına uygun, akıcı ve doğal bir muhabbet kur. Eğer sembol ({symbol}) varsa, bağlama uygun şekilde atıfta bulun ve BTC/ETH korelasyonlarını vurgula. 🤝 "
             f"Konuşma geçmişini ve son analizi dikkate al. Emoji kullan, özgürce yaz! 🎉 Yanıt maks 1500 karakter olsun.\n\n"
             f"Kullanıcı mesajı: {user_message}\n"
