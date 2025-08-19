@@ -41,24 +41,75 @@ COINS = {
     "MKRUSDT": ["mkr", "mkrusdt", "maker"]
 }
 
-class MEXCClient:
-    """MEXC Spot API ile iletişim kurar."""
+class CoinMarketCapClient:
+    """CoinMarketCap API ile iletişim kurar."""
     def __init__(self):
-        self.spot_url = "https://api.mexc.com"
+        self.base_url = "https://pro-api.coinmarketcap.com"
+        self.api_key = os.getenv('COINMARKETCAP_API_KEY')
         self.session = None
 
     async def initialize(self):
         """Session’ı başlatır."""
         if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession(headers={'X-CMC_PRO_API_KEY': self.api_key})
+
+    async def fetch_kline_data(self, symbol, interval, count=50):
+        """CoinMarketCap’ten kline verisi çeker."""
+        await self.initialize()
+        try:
+            cmc_intervals = {'6h': '6h', '12h': '12h', '1w': 'weekly'}
+            if interval not in cmc_intervals:
+                return {'data': []}
+            url = f"{self.base_url}/v2/cryptocurrency/ohlcv/historical?symbol={symbol[:-4]}&interval={cmc_intervals[interval]}&count={count}"
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    response_data = await response.json()
+                    if response_data['data'].get(symbol[:-4]):
+                        data = [
+                            [quote['timestamp'], quote['open'], quote['high'], quote['low'], quote['close'], quote['volume'], quote['timestamp'], quote['quote_volume']]
+                            for quote in response_data['data'][symbol[:-4]][0]['quotes']
+                        ]
+                        logger.info(f"CoinMarketCap kline response for {symbol} ({interval}): {data[:1]}...")
+                        return {'data': data}
+                    else:
+                        logger.warning(f"No CoinMarketCap kline data for {symbol} ({interval})")
+                        return {'data': []}
+                else:
+                    logger.error(f"Failed to fetch CoinMarketCap kline data for {symbol} ({interval}): {response.status}")
+                    return {'data': []}
+        except Exception as e:
+            logger.error(f"Error fetching CoinMarketCap kline data for {symbol} ({interval}): {e}")
+            return {'data': []}
+        finally:
+            await asyncio.sleep(0.5)
+
+    async def close(self):
+        """Session’ı kapatır."""
+        if self.session and not self.session.closed:
+            await self.session.close()
+            self.session = None
+
+class MEXCClient:
+    """MEXC Spot API ile iletişim kurar."""
+    def __init__(self):
+        self.spot_url = "https://api.mexc.com"
+        self.session = None
+        self.cmc_client = CoinMarketCapClient()
+
+    async def initialize(self):
+        """Session’ı başlatır."""
+        if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
+        await self.cmc_client.initialize()
 
     async def fetch_market_data(self, symbol):
         """Spot piyasası verisi çeker."""
         await self.initialize()
         try:
             klines = {}
-            for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
-                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
+            mexc_intervals = ['5m', '15m', '60m', '1d']
+            for interval in mexc_intervals:
+                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=50"
                 async with self.session.get(url) as response:
                     if response.status == 200:
                         response_data = await response.json()
@@ -71,7 +122,12 @@ class MEXCClient:
                     else:
                         logger.error(f"Failed to fetch kline data for {symbol} ({interval}): {response.status}")
                         klines[interval] = {'data': []}
-                await asyncio.sleep(0.5)  # Rate limit için artırıldı
+                    await asyncio.sleep(0.5)
+
+            # CoinMarketCap’ten 6h, 12h, 1w verilerini çek
+            cmc_intervals = ['6h', '12h', '1w']
+            for interval in cmc_intervals:
+                klines[interval] = await self.cmc_client.fetch_kline_data(symbol, interval)
 
             order_book_url = f"{self.spot_url}/api/v3/depth?symbol={symbol}&limit=10"
             async with self.session.get(order_book_url) as response:
@@ -112,7 +168,7 @@ class MEXCClient:
         """BTC/USDT spot verilerini çeker."""
         await self.initialize()
         async with self.session:
-            url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100"
+            url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=50"
             async with self.session.get(url) as response:
                 response_data = await response.json() if response.status == 200 else []
                 logger.info(f"BTC data response: {response_data[:1]}...")
@@ -122,7 +178,7 @@ class MEXCClient:
         """ETH/USDT spot verilerini çeker."""
         await self.initialize()
         async with self.session:
-            url = f"{self.spot_url}/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=100"
+            url = f"{self.spot_url}/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=50"
             async with self.session.get(url) as response:
                 response_data = await response.json() if response.status == 200 else []
                 logger.info(f"ETH data response: {response_data[:1]}...")
@@ -143,6 +199,7 @@ class MEXCClient:
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
+        await self.cmc_client.close()
 
 class DeepSeekClient:
     """DeepSeek API ile analiz yapar ve doğal dil işleme sağlar."""
@@ -156,7 +213,7 @@ class DeepSeekClient:
         fib_levels = data['indicators'].get('fibonacci_levels', [0.0, 0.0, 0.0, 0.0, 0.0])
         ichimoku = data['indicators'].get('ichimoku_1d', {})
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik long ve short pozisyon parametrelerini sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Kısa vadeli (5m, 15m, 60m) ve uzun vadeli (6h, 12h, 1d, 1w) trendleri ayrı ayrı değerlendir. Her alan için tam bir sayı veya metin zorunlu.
+        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik long ve short pozisyon parametrelerini sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Kısa vadeli (5m, 15m, 60m) ve uzun vadeli (6h, 12h, 1d, 1w) trendleri ayrı ayrı değerlendir. Uzun vadeli veriler CoinMarketCap’ten alındı, eksiklikleri belirt. Her alan için tam bir sayı veya metin zorunlu.
 
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
@@ -203,7 +260,7 @@ class DeepSeekClient:
         ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
         🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
         🔗 ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['eth_correlation'] > 0.8 else 'Normal'})
-        💬 Yorum: [Kısa vadeli (5m, 15m, 60m) ve uzun vadeli (6h, 12h, 1d, 1w) trendleri ayrı ayrı değerlendir. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
+        💬 Yorum: [Kısa vadeli (5m, 15m, 60m) MEXC’ten, uzun vadeli (6h, 12h, 1w) CoinMarketCap’ten alındı. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
         """
         try:
             response = await asyncio.wait_for(
@@ -395,6 +452,20 @@ class Storage:
         except sqlite3.Error as e:
             logger.error(f"SQLite error while fetching last symbol for chat_id {chat_id}: {e}")
             return None
+
+    def clean_old_data(self, days=7):
+        """Eski verileri temizler."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM analyses WHERE timestamp < ?", 
+                              (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S'))
+                cursor.execute("DELETE FROM conversations WHERE timestamp < ?", 
+                              (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S'))
+                conn.commit()
+                logger.info("Old data cleaned from SQLite")
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error while cleaning old data: {e}")
 
 class TelegramBot:
     """Telegram botu."""
@@ -591,6 +662,7 @@ class TelegramBot:
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             self.storage.save_analysis(symbol, data)
             self.storage.save_conversation(chat_id, symbol, message, symbol)
+            self.storage.clean_old_data()  # Bellek optimizasyonu
             return data
         except Exception as e:
             logger.error(f"Error processing coin {symbol}: {e}")
@@ -653,11 +725,11 @@ class TelegramBot:
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     """Teknik göstergeleri hesaplar."""
     indicators = {}
-    fallback_interval = None  # Eksik veriler için yedek zaman dilimi
+    fallback_interval = None
     for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
         kline = kline_data.get(interval, {}).get('data', [])
         if kline and len(kline) > 1:
-            fallback_interval = interval  # Geçerli veri varsa yedek olarak kullan
+            fallback_interval = interval
             try:
                 df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
                 df['close'] = df['close'].astype(float)
@@ -722,9 +794,9 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 ]
 
                 # Fibonacci Retracement
-                if len(df) >= 100:
-                    high = df['high'].tail(100).max()
-                    low = df['low'].tail(100).min()
+                if len(df) >= 50:
+                    high = df['high'].tail(50).max()
+                    low = df['low'].tail(50).min()
                     diff = high - low
                     indicators['fibonacci_levels'] = [
                         low + diff * 0.236,
@@ -748,7 +820,28 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                         }
                     except Exception as e:
                         logger.error(f"Ichimoku error for {symbol} ({interval}): {e}")
-                        indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
+                        # 60m’den Ichimoku türet
+                        if '60m' in kline_data and kline_data['60m'].get('data'):
+                            df_60m = pd.DataFrame(kline_data['60m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+                            df_60m['close'] = df_60m['close'].astype(float)
+                            df_60m['high'] = df_60m['high'].astype(float)
+                            df_60m['low'] = df_60m['low'].astype(float)
+                            if len(df_60m) >= 52:
+                                try:
+                                    ichimoku = ta.ichimoku(df_60m['high'], df_60m['low'], df_60m['close'], tenkan=9, kijun=26, senkou=52)[0]
+                                    indicators[f'ichimoku_{interval}'] = {
+                                        'tenkan': ichimoku['ITS_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
+                                        'kijun': ichimoku['ITK_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
+                                        'senkou_a': ichimoku['ISA_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
+                                        'senkou_b': ichimoku['ISB_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0
+                                    }
+                                except Exception as e:
+                                    logger.error(f"Fallback Ichimoku error for {symbol} (60m): {e}")
+                                    indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
+                            else:
+                                indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
+                        else:
+                            indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
                 else:
                     indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
 
@@ -783,7 +876,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
             })
 
-    # Destek/Direnç ve Fibonacci için yedek hesaplama (5m veya 60m'den)
+    # Destek/Direnç ve Fibonacci için yedek hesaplama (60m’den)
     if all(indicators['support_levels'][i] == 0.0 for i in range(3)) and fallback_interval:
         kline = kline_data.get(fallback_interval, {}).get('data', [])
         if kline and len(kline) > 1:
@@ -804,9 +897,9 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 pivot + range_high_low * 0.618,
                 pivot + range_high_low
             ]
-            if len(df) >= 100:
-                high = df['high'].tail(100).max()
-                low = df['low'].tail(100).min()
+            if len(df) >= 50:
+                high = df['high'].tail(50).max()
+                low = df['low'].tail(50).min()
                 diff = high - low
                 indicators['fibonacci_levels'] = [
                     low + diff * 0.236,
