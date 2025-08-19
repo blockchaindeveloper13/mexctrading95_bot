@@ -260,6 +260,30 @@ class DeepSeekClient:
         for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
             raw_data[interval] = data['indicators'].get(f'raw_data_{interval}', {'high': 0.0, 'low': 0.0, 'close': 0.0})
 
+        # Göstergeleri önceden formatla
+        indicators_formatted = []
+        for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
+            ma50 = data['indicators'][f'ma_{interval}']['ma50']
+            rsi = data['indicators'][f'rsi_{interval}']
+            atr = data['indicators'][f'atr_{interval}']
+            macd = data['indicators'][f'macd_{interval}']['macd']
+            signal = data['indicators'][f'macd_{interval}']['signal']
+            bb_upper = data['indicators'][f'bbands_{interval}']['upper']
+            bb_lower = data['indicators'][f'bbands_{interval}']['lower']
+            stoch_k = data['indicators'][f'stoch_{interval}']['k']
+            stoch_d = data['indicators'][f'stoch_{interval}']['d']
+            obv = data['indicators'][f'obv_{interval}']
+            indicators_formatted.append(f"""
+        - {interval} Göstergeleri:
+          - MA50: {ma50:.2f}
+          - RSI: {rsi:.2f}
+          - ATR: {atr:.2f}%
+          - MACD: {macd:.2f}, Sinyal: {signal:.2f}
+          - Bollinger: Üst={bb_upper:.2f}, Alt={bb_lower:.2f}
+          - Stochastic: %K={stoch_k:.2f}, %D={stoch_d:.2f}
+          - OBV: {obv:.2f}
+        """)
+
         prompt = f"""
         {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Her zaman dilimi (5m, 15m, 60m, 6h, 12h, 1d, 1w) için ayrı ayrı long ve short pozisyon önerileri üret (her biri için giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini). ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik pozisyon parametrelerini sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve her zaman dilimi için analiz sürecini yorumda açıkla. Tüm veriler KuCoin’den alındı. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.
 
@@ -275,19 +299,10 @@ class DeepSeekClient:
         {', '.join([f"{interval}: High=${raw_data[interval]['high']:.2f}, Low=${raw_data[interval]['low']:.2f}, Close=${raw_data[interval]['close']:.2f}" for interval in raw_data])}
 
         ### Diğer Veriler
-        - Mevcut Fiyat: {data['price']} USDT
-        - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
+        - Mevcut Fiyat: {data['price']:.2f} USDT
+        - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0):.2f}%
         - Göstergeler:
-        {''.join([f"""
-        - {interval} Göstergeleri:
-          - MA50: {data['indicators'][f'ma_{interval}']['ma50']:.2f}
-          - RSI: {data['indicators'][f'rsi_{interval}']:.2f}
-          - ATR: %{data['indicators'][f'atr_{interval}']:.2f}
-          - MACD: {data['indicators'][f'macd_{interval}']['macd']:.2f}, Sinyal: {data['indicators'][f'macd_{interval}']['signal']:.2f}
-          - Bollinger: Üst={data['indicators'][f'bbands_{interval}']['upper']:.2f}, Alt={data['indicators'][f'bbands_{interval}']['lower']:.2f}
-          - Stochastic: %K={data['indicators'][f'stoch_{interval}']['k']:.2f}, %D={data['indicators'][f'stoch_{interval}']['d']:.2f}
-          - OBV: {data['indicators'][f'obv_{interval}']:.2f}
-        """ for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']])}
+        {''.join(indicators_formatted)}
         - Fibonacci Seviyeleri: {', '.join([f'${x:.2f}' for x in fib_levels])}
         - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
         - ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f}
@@ -315,7 +330,7 @@ class DeepSeekClient:
         📍 Direnç: [Hesaplanan seviyeler]
         """ for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']])}
         📍 Fibonacci: {', '.join([f'${x:.2f}' for x in fib_levels])}
-        ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
+        ⚠️ Volatilite: {data['indicators']['atr_5m']:.2f}% ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
         🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
         🔗 ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['eth_correlation'] > 0.8 else 'Normal'})
         💬 Yorum: [Her zaman dilimi için destek ve direnç seviyelerini nasıl hesapladığını, hangi göstergelere (MA50, RSI, MACD, Bollinger, Stochastic, OBV) dayandığını ve giriş/take-profit/stop-loss seçim gerekçesini açıkla. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
@@ -325,7 +340,7 @@ class DeepSeekClient:
                 self.client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=1500,  # Daha uzun yanıt için max_tokens artırıldı
+                    max_tokens=2000,  # Daha uzun yanıt için artırıldı
                     stream=False
                 ),
                 timeout=180.0
