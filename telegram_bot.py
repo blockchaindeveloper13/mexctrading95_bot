@@ -217,14 +217,30 @@ class DeepSeekClient:
         self.client = AsyncOpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
 
     async def analyze_coin(self, symbol, data):
-        """Coin için long/short analizi yapar."""
-        support_levels = data['indicators'].get('support_levels', [0.0, 0.0, 0.0])
-        resistance_levels = data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])
+        """Coin için long/short analizi yapar ve destek/direnç seviyelerini hesaplar."""
         fib_levels = data['indicators'].get('fibonacci_levels', [0.0, 0.0, 0.0, 0.0, 0.0])
         ichimoku = data['indicators'].get('ichimoku_1d', {})
+        
+        # Ham verileri topla
+        raw_data = {}
+        for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
+            raw_data[interval] = data['indicators'].get(f'raw_data_{interval}', {'high': 0.0, 'low': 0.0, 'close': 0.0})
+
         prompt = f"""
         {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik long ve short pozisyon parametrelerini sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Tüm veriler KuCoin’den alındı. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.
 
+        ### Destek ve Direnç Hesaplama
+        Aşağıdaki ham verilere dayanarak her zaman dilimi için destek ve direnç seviyelerini hesapla:
+        - Pivot = (High + Low + Close) / 3
+        - Range = High - Low
+        - Destek Seviyeleri: [Pivot - Range * 0.5, Pivot - Range * 0.618, Pivot - Range]
+        - Direnç Seviyeleri: [Pivot + Range * 0.5, Pivot + Range * 0.618, Pivot + Range]
+        En güvenilir zaman dilimi (örneğin, 1d veya 6h) için hesaplanan seviyeleri analizde kullan ve diğer zaman dilimlerini karşılaştırma için belirt. Eğer ham veriler eksikse veya geçersizse (örn. High, Low veya Close 0.0 ise), bu durumu yorumda belirt ve en uygun alternatif zaman dilimini kullan.
+
+        ### Ham Veriler
+        {', '.join([f"{interval}: High=${raw_data[interval]['high']:.2f}, Low=${raw_data[interval]['low']:.2f}, Close=${raw_data[interval]['close']:.2f}" for interval in raw_data])}
+
+        ### Diğer Veriler
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
         - Kısa Vadeli Göstergeler (5m):
@@ -242,8 +258,6 @@ class DeepSeekClient:
           - MACD: {data['indicators']['macd_1d']['macd']:.2f}, Sinyal: {data['indicators']['macd_1d']['signal']:.2f}
           - Ichimoku: Tenkan={ichimoku.get('tenkan', 0.0):.2f}, Kijun={ichimoku.get('kijun', 0.0):.2f}, Bulut={ichimoku.get('senkou_a', 0.0):.2f}/{ichimoku.get('senkou_b', 0.0):.2f}
         - Fibonacci Seviyeleri (1d): {', '.join([f'${x:.2f}' for x in fib_levels])}
-        - Destek: {', '.join([f'${x:.2f}' for x in support_levels])}
-        - Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
         - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
         - ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f}
 
@@ -264,13 +278,13 @@ class DeepSeekClient:
         - Kaldıraç: Nx
         - Risk/Ödül: A:B
         - Trend: [Yükseliş/Düşüş/Nötr]
-        📍 Destek: {', '.join([f'${x:.2f}' for x in support_levels])}
-        📍 Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
+        📍 Destek: [Hesaplanan seviyeler]
+        📍 Direnç: [Hesaplanan seviyeler]
         📍 Fibonacci: {', '.join([f'${x:.2f}' for x in fib_levels])}
         ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
         🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
         🔗 ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['eth_correlation'] > 0.8 else 'Normal'})
-        💬 Yorum: [Kısa vadeli (5m, 15m, 60m) ve uzun vadeli (6h, 12h, 1w) veriler KuCoin’den alındı. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
+        💬 Yorum: [Destek ve direnç seviyelerini nasıl hesapladığını, hangi zaman dilimini neden seçtiğini, seviyelerin güvenilirliğini ve diğer göstergelerle ilişkisini açıkla. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
         """
         try:
             response = await asyncio.wait_for(
@@ -286,8 +300,8 @@ class DeepSeekClient:
             logger.info(f"DeepSeek raw response for {symbol}: {analysis_text}")
             if len(analysis_text) < 500:
                 analysis_text += " " * (500 - len(analysis_text))
-            
-            required_fields = ['Giriş', 'Take-Profit', 'Stop-Loss', 'Kaldıraç', 'Risk/Ödül', 'Trend', 'Yorum']
+
+            required_fields = ['Giriş', 'Take-Profit', 'Stop-Loss', 'Kaldıraç', 'Risk/Ödül', 'Trend', 'Yorum', 'Destek', 'Direnç']
             missing_fields = []
             for field in required_fields:
                 if field == 'Yorum':
@@ -775,7 +789,8 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
                 f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
                 f'obv_{interval}': 0.0,
-                f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
+                f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0},
+                f'raw_data_{interval}': {'high': 0.0, 'low': 0.0, 'close': 0.0}
             })
             continue
 
@@ -793,11 +808,20 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
                     f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
                     f'obv_{interval}': 0.0,
-                    f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
+                    f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0},
+                    f'raw_data_{interval}': {'high': 0.0, 'low': 0.0, 'close': 0.0}
                 })
                 continue
 
             df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
+
+            # Ham verileri sakla
+            last_row = df.iloc[-1]
+            indicators[f'raw_data_{interval}'] = {
+                'high': float(last_row['high']) if pd.notnull(last_row['high']) else 0.0,
+                'low': float(last_row['low']) if pd.notnull(last_row['low']) else 0.0,
+                'close': float(last_row['close']) if pd.notnull(last_row['close']) else 0.0
+            }
 
             # Hareketli Ortalamalar
             sma_50 = ta.sma(df['close'], length=50) if len(df) >= 50 else pd.Series([0.0])
@@ -840,41 +864,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             obv = ta.obv(df['close'], df['volume']) if len(df) >= 1 else None
             indicators[f'obv_{interval}'] = obv.iloc[-1] if obv is not None and not obv.empty and pd.notnull(obv.iloc[-1]) else 0.0
 
-            # Destek ve Direnç
-            last_row = df.iloc[-1]
-            if pd.notnull(last_row['high']) and pd.notnull(last_row['low']) and pd.notnull(last_row['close']):
-                pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
-                range_high_low = last_row['high'] - last_row['low']
-                indicators['support_levels'] = [
-                    pivot - range_high_low * 0.5,
-                    pivot - range_high_low * 0.618,
-                    pivot - range_high_low
-                ]
-                indicators['resistance_levels'] = [
-                    pivot + range_high_low * 0.5,
-                    pivot + range_high_low * 0.618,
-                    pivot + range_high_low
-                ]
-            else:
-                indicators['support_levels'] = [0.0, 0.0, 0.0]
-                indicators['resistance_levels'] = [0.0, 0.0, 0.0]
-                logger.warning(f"Invalid high/low/close for {symbol} ({interval})")
-
-            # Fibonacci Retracement
-            if len(df) >= 30 and pd.notnull(df['high'].tail(30).max()) and pd.notnull(df['low'].tail(30).min()):
-                high = df['high'].tail(30).max()
-                low = df['low'].tail(30).min()
-                diff = high - low
-                indicators['fibonacci_levels'] = [
-                    low + diff * 0.236,
-                    low + diff * 0.382,
-                    low + diff * 0.5,
-                    low + diff * 0.618,
-                    low + diff * 0.786
-                ]
-            else:
-                indicators['fibonacci_levels'] = [0.0, 0.0, 0.0, 0.0, 0.0]
-
             # Ichimoku Cloud
             if interval == '1d' and len(df) >= 52:
                 try:
@@ -901,43 +890,32 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
                 f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
                 f'obv_{interval}': 0.0,
-                f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
+                f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0},
+                f'raw_data_{interval}': {'high': 0.0, 'low': 0.0, 'close': 0.0}
             })
 
-    if all(indicators['support_levels'][i] == 0.0 for i in range(3)):
-        for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
-            kline = kline_data.get(interval, {}).get('data', [])
-            if kline and len(kline) > 1:
-                df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].dropna()
-                if not df.empty:
-                    last_row = df.iloc[-1]
-                    if pd.notnull(last_row['high']) and pd.notnull(last_row['low']) and pd.notnull(last_row['close']):
-                        pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
-                        range_high_low = last_row['high'] - last_row['low']
-                        indicators['support_levels'] = [
-                            pivot - range_high_low * 0.5,
-                            pivot - range_high_low * 0.618,
-                            pivot - range_high_low
-                        ]
-                        indicators['resistance_levels'] = [
-                            pivot + range_high_low * 0.5,
-                            pivot + range_high_low * 0.618,
-                            pivot + range_high_low
-                        ]
-                        if len(df) >= 30 and pd.notnull(df['high'].tail(30).max()) and pd.notnull(df['low'].tail(30).min()):
-                            high = df['high'].tail(30).max()
-                            low = df['low'].tail(30).min()
-                            diff = high - low
-                            indicators['fibonacci_levels'] = [
-                                low + diff * 0.236,
-                                low + diff * 0.382,
-                                low + diff * 0.5,
-                                low + diff * 0.618,
-                                low + diff * 0.786
-                            ]
-                        break
+    # Fibonacci Retracement
+    for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
+        kline = kline_data.get(interval, {}).get('data', [])
+        if kline and len(kline) >= 30:
+            df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+            df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].dropna()
+            if not df.empty and pd.notnull(df['high'].tail(30).max()) and pd.notnull(df['low'].tail(30).min()):
+                high = df['high'].tail(30).max()
+                low = df['low'].tail(30).min()
+                diff = high - low
+                indicators['fibonacci_levels'] = [
+                    low + diff * 0.236,
+                    low + diff * 0.382,
+                    low + diff * 0.5,
+                    low + diff * 0.618,
+                    low + diff * 0.786
+                ]
+                break
+        else:
+            indicators['fibonacci_levels'] = [0.0, 0.0, 0.0, 0.0, 0.0]
 
+    # Sipariş Defteri Oranı
     if order_book.get('bids') and order_book.get('asks'):
         bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
         ask_volume = sum(float(ask[1]) for ask in order_book['asks'])
