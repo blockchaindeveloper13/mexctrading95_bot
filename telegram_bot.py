@@ -57,31 +57,31 @@ class MEXCClient:
         await self.initialize()
         try:
             klines = {}
-            for interval in ['5m', '15m', '60m']:
+            for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
                 url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
                 async with self.session.get(url) as response:
                     response_data = await response.json() if response.status == 200 else []
                     klines[interval] = {'data': response_data}
                     logger.info(f"Kline response for {symbol} ({interval}): {response_data[:1]}...")
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.3)  # Rate limit için artırıldı
 
             order_book_url = f"{self.spot_url}/api/v3/depth?symbol={symbol}&limit=10"
             async with self.session.get(order_book_url) as response:
                 order_book = await response.json() if response.status == 200 else {'bids': [], 'asks': []}
                 logger.info(f"Order book response for {symbol}: {order_book}")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.3)
 
             ticker_url = f"{self.spot_url}/api/v3/ticker/price?symbol={symbol}"
             async with self.session.get(ticker_url) as response:
                 ticker = await response.json() if response.status == 200 else {'price': '0.0'}
                 logger.info(f"Ticker response for {symbol}: {ticker}")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.3)
 
             ticker_24hr_url = f"{self.spot_url}/api/v3/ticker/24hr?symbol={symbol}"
             async with self.session.get(ticker_24hr_url) as response:
                 ticker_24hr = await response.json() if response.status == 200 else {'priceChangePercent': '0.0'}
                 logger.info(f"24hr ticker response for {symbol}: {ticker_24hr}")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.3)
 
             btc_data = await self.fetch_btc_data()
             eth_data = await self.fetch_eth_data()
@@ -145,23 +145,36 @@ class DeepSeekClient:
         """Coin için long/short analizi yapar."""
         support_levels = data['indicators'].get('support_levels', [0.0, 0.0, 0.0])
         resistance_levels = data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])
+        fib_levels = data['indicators'].get('fibonacci_levels', [0.0, 0.0, 0.0, 0.0, 0.0])
+        ichimoku = data['indicators'].get('ichimoku_1d', {})
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit (çıkış), stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik long ve short pozisyon parametrelerini yine de sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Her alan için tam bir sayı veya metin zorunlu.
+        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik long ve short pozisyon parametrelerini sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Kısa vadeli (5m, 15m, 60m) ve uzun vadeli (6h, 12h, 1d, 1w) trendleri ayrı ayrı değerlendir. Her alan için tam bir sayı veya metin zorunlu.
 
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
-        - Göstergeler:
-          - MA (5m): 50={data['indicators']['ma_5m']['ma50']:.2f}, 200={data['indicators']['ma_5m']['ma200']:.2f}
-          - RSI (5m): {data['indicators']['rsi_5m']:.2f}
-          - ATR (5m): %{data['indicators']['atr_5m']:.2f}
-          - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
-          - ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f}
+        - Kısa Vadeli Göstergeler (5m):
+          - MA: 50={data['indicators']['ma_5m']['ma50']:.2f}, 200={data['indicators']['ma_5m']['ma200']:.2f}
+          - RSI: {data['indicators']['rsi_5m']:.2f}
+          - ATR: %{data['indicators']['atr_5m']:.2f}
+          - MACD: {data['indicators']['macd_5m']['macd']:.2f}, Sinyal: {data['indicators']['macd_5m']['signal']:.2f}
+          - Bollinger: Üst={data['indicators']['bbands_5m']['upper']:.2f}, Alt={data['indicators']['bbands_5m']['lower']:.2f}
+          - Stochastic: %K={data['indicators']['stoch_5m']['k']:.2f}, %D={data['indicators']['stoch_5m']['d']:.2f}
+          - OBV: {data['indicators']['obv_5m']:.2f}
+        - Uzun Vadeli Göstergeler (1d):
+          - MA: 50={data['indicators']['ma_1d']['ma50']:.2f}, 200={data['indicators']['ma_1d']['ma200']:.2f}
+          - RSI: {data['indicators']['rsi_1d']:.2f}
+          - ATR: %{data['indicators']['atr_1d']:.2f}
+          - MACD: {data['indicators']['macd_1d']['macd']:.2f}, Sinyal: {data['indicators']['macd_1d']['signal']:.2f}
+          - Ichimoku: Tenkan={ichimoku.get('tenkan', 0.0):.2f}, Kijun={ichimoku.get('kijun', 0.0):.2f}, Bulut={ichimoku.get('senkou_a', 0.0):.2f}/{ichimoku.get('senkou_b', 0.0):.2f}
+        - Fibonacci Seviyeleri (1d): {', '.join([f'${x:.2f}' for x in fib_levels])}
         - Destek: {', '.join([f'${x:.2f}' for x in support_levels])}
         - Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
+        - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
+        - ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f}
 
         Çıktı formatı:
         📊 {symbol} Vadeli Analiz ({datetime.now().strftime('%Y-%m-%d %H:%M')})
-        🔄 Zaman Dilimleri: 5m, 15m, 1h
+        🔄 Zaman Dilimleri: 5m, 15m, 60m, 6h, 12h, 1d, 1w
         📈 Long Pozisyon:
         - Giriş: $X
         - Take-Profit: $Y
@@ -178,10 +191,11 @@ class DeepSeekClient:
         - Trend: [Yükseliş/Düşüş/Nötr]
         📍 Destek: {', '.join([f'${x:.2f}' for x in support_levels])}
         📍 Direnç: {', '.join([f'${x:.2f}' for x in resistance_levels])}
+        📍 Fibonacci: {', '.join([f'${x:.2f}' for x in fib_levels])}
         ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
         🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
         🔗 ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['eth_correlation'] > 0.8 else 'Normal'})
-        💬 Yorum: [Analiz süreci, hangi göstergelere dayandığı, giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla.]
+        💬 Yorum: [Kısa vadeli (5m, 15m, 60m) ve uzun vadeli (6h, 12h, 1d, 1w) trendleri ayrı ayrı değerlendir. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla.]
         """
         try:
             response = await asyncio.wait_for(
@@ -558,7 +572,7 @@ class TelegramBot:
         """Coin için analiz yapar."""
         try:
             data = await self.mexc.fetch_market_data(symbol)
-            if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m']):
+            if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']):
                 response = f"😓 Kanka, {symbol} için veri bulamadım. Başka coin mi bakalım?"
                 await self.app.bot.send_message(chat_id=chat_id, text=response)
                 self.storage.save_conversation(chat_id, symbol, response, symbol)
@@ -625,7 +639,7 @@ class TelegramBot:
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     """Teknik göstergeleri hesaplar."""
     indicators = {}
-    for interval in ['5m', '15m', '60m']:
+    for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
         kline = kline_data.get(interval, {}).get('data', [])
         if kline and len(kline) > 1:
             try:
@@ -635,6 +649,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 df['low'] = df['low'].astype(float)
                 df['volume'] = df['volume'].astype(float)
 
+                # Hareketli Ortalamalar
                 sma_50 = ta.sma(df['close'], length=50) if len(df) >= 50 else None
                 sma_200 = ta.sma(df['close'], length=200) if len(df) >= 200 else None
                 indicators[f'ma_{interval}'] = {
@@ -642,12 +657,40 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     'ma200': sma_200.iloc[-1] if sma_200 is not None and not sma_200.empty else 0.0
                 }
 
+                # RSI
                 rsi = ta.rsi(df['close'], length=14) if len(df) >= 14 else None
                 indicators[f'rsi_{interval}'] = rsi.iloc[-1] if rsi is not None and not rsi.empty else 0.0
 
+                # ATR
                 atr = ta.atr(df['high'], df['low'], df['close'], length=14) if len(df) >= 14 else None
                 indicators[f'atr_{interval}'] = (atr.iloc[-1] / df['close'].iloc[-1] * 100) if atr is not None and not atr.empty else 0.0
 
+                # MACD
+                macd = ta.macd(df['close'], fast=12, slow=26, signal=9) if len(df) >= 26 else None
+                indicators[f'macd_{interval}'] = {
+                    'macd': macd['MACD_12_26_9'].iloc[-1] if macd is not None and not macd.empty else 0.0,
+                    'signal': macd['MACDs_12_26_9'].iloc[-1] if macd is not None and not macd.empty else 0.0
+                }
+
+                # Bollinger Bantları
+                bbands = ta.bbands(df['close'], length=20, std=2) if len(df) >= 20 else None
+                indicators[f'bbands_{interval}'] = {
+                    'upper': bbands['BBU_20_2.0'].iloc[-1] if bbands is not None and not bbands.empty else 0.0,
+                    'lower': bbands['BBL_20_2.0'].iloc[-1] if bbands is not None and not bbands.empty else 0.0
+                }
+
+                # Stochastic Oscillator
+                stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3, smooth_k=3) if len(df) >= 14 else None
+                indicators[f'stoch_{interval}'] = {
+                    'k': stoch['STOCHk_14_3_3'].iloc[-1] if stoch is not None and not stoch.empty else 0.0,
+                    'd': stoch['STOCHd_14_3_3'].iloc[-1] if stoch is not None and not stoch.empty else 0.0
+                }
+
+                # OBV
+                obv = ta.obv(df['close'], df['volume']) if len(df) >= 1 else None
+                indicators[f'obv_{interval}'] = obv.iloc[-1] if obv is not None and not obv.empty else 0.0
+
+                # Destek ve Direnç
                 last_row = df.iloc[-1]
                 pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
                 range_high_low = last_row['high'] - last_row['low']
@@ -661,14 +704,48 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     pivot + range_high_low * 0.618,
                     pivot + range_high_low
                 ]
+
+                # Fibonacci Retracement (1d için)
+                if interval == '1d' and len(df) >= 100:
+                    high = df['high'].tail(100).max()
+                    low = df['low'].tail(100).min()
+                    diff = high - low
+                    indicators['fibonacci_levels'] = [
+                        low + diff * 0.236,
+                        low + diff * 0.382,
+                        low + diff * 0.5,
+                        low + diff * 0.618,
+                        low + diff * 0.786
+                    ]
+                else:
+                    indicators['fibonacci_levels'] = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+                # Ichimoku Cloud (1d için)
+                if interval == '1d':
+                    ichimoku = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=9, kijun=26, senkou=52)[0] if len(df) >= 52 else None
+                    indicators[f'ichimoku_{interval}'] = {
+                        'tenkan': ichimoku['ITS_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
+                        'kijun': ichimoku['ITK_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
+                        'senkou_a': ichimoku['ISA_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
+                        'senkou_b': ichimoku['ISB_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0
+                    }
+                else:
+                    indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
+
             except Exception as e:
                 logger.error(f"Error calculating indicators for {symbol} ({interval}): {e}")
                 indicators.update({
                     f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
                     f'rsi_{interval}': 0.0,
                     f'atr_{interval}': 0.0,
+                    f'macd_{interval}': {'macd': 0.0, 'signal': 0.0},
+                    f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
+                    f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
+                    f'obv_{interval}': 0.0,
                     'support_levels': [0.0, 0.0, 0.0],
-                    'resistance_levels': [0.0, 0.0, 0.0]
+                    'resistance_levels': [0.0, 0.0, 0.0],
+                    'fibonacci_levels': [0.0, 0.0, 0.0, 0.0, 0.0],
+                    f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
                 })
         else:
             logger.warning(f"No kline data for {symbol} ({interval})")
@@ -676,8 +753,14 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
                 f'rsi_{interval}': 0.0,
                 f'atr_{interval}': 0.0,
+                f'macd_{interval}': {'macd': 0.0, 'signal': 0.0},
+                f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
+                f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
+                f'obv_{interval}': 0.0,
                 'support_levels': [0.0, 0.0, 0.0],
-                'resistance_levels': [0.0, 0.0, 0.0]
+                'resistance_levels': [0.0, 0.0, 0.0],
+                'fibonacci_levels': [0.0, 0.0, 0.0, 0.0, 0.0],
+                f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
             })
 
     if order_book.get('bids') and order_book.get('asks'):
