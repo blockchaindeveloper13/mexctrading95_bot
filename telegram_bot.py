@@ -60,28 +60,36 @@ class MEXCClient:
             for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
                 url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
                 async with self.session.get(url) as response:
-                    response_data = await response.json() if response.status == 200 else []
-                    klines[interval] = {'data': response_data}
-                    logger.info(f"Kline response for {symbol} ({interval}): {response_data[:1]}...")
-                await asyncio.sleep(0.3)  # Rate limit için artırıldı
+                    if response.status == 200:
+                        response_data = await response.json()
+                        if response_data and isinstance(response_data, list) and len(response_data) > 0:
+                            klines[interval] = {'data': response_data}
+                            logger.info(f"Kline response for {symbol} ({interval}): {response_data[:1]}...")
+                        else:
+                            logger.warning(f"No valid kline data for {symbol} ({interval})")
+                            klines[interval] = {'data': []}
+                    else:
+                        logger.error(f"Failed to fetch kline data for {symbol} ({interval}): {response.status}")
+                        klines[interval] = {'data': []}
+                await asyncio.sleep(0.5)  # Rate limit için artırıldı
 
             order_book_url = f"{self.spot_url}/api/v3/depth?symbol={symbol}&limit=10"
             async with self.session.get(order_book_url) as response:
                 order_book = await response.json() if response.status == 200 else {'bids': [], 'asks': []}
                 logger.info(f"Order book response for {symbol}: {order_book}")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
 
             ticker_url = f"{self.spot_url}/api/v3/ticker/price?symbol={symbol}"
             async with self.session.get(ticker_url) as response:
                 ticker = await response.json() if response.status == 200 else {'price': '0.0'}
                 logger.info(f"Ticker response for {symbol}: {ticker}")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
 
             ticker_24hr_url = f"{self.spot_url}/api/v3/ticker/24hr?symbol={symbol}"
             async with self.session.get(ticker_24hr_url) as response:
                 ticker_24hr = await response.json() if response.status == 200 else {'priceChangePercent': '0.0'}
                 logger.info(f"24hr ticker response for {symbol}: {ticker_24hr}")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
 
             btc_data = await self.fetch_btc_data()
             eth_data = await self.fetch_eth_data()
@@ -195,7 +203,7 @@ class DeepSeekClient:
         ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
         🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
         🔗 ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['eth_correlation'] > 0.8 else 'Normal'})
-        💬 Yorum: [Kısa vadeli (5m, 15m, 60m) ve uzun vadeli (6h, 12h, 1d, 1w) trendleri ayrı ayrı değerlendir. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla.]
+        💬 Yorum: [Kısa vadeli (5m, 15m, 60m) ve uzun vadeli (6h, 12h, 1d, 1w) trendleri ayrı ayrı değerlendir. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
         """
         try:
             response = await asyncio.wait_for(
@@ -599,10 +607,16 @@ class TelegramBot:
             await self.mexc.initialize()
             await self.app.initialize()
             await self.app.start()
+            webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
+            # Webhook durumunu kontrol et
+            current_webhook = await self.app.bot.get_webhook_info()
+            if current_webhook.url != webhook_url:
+                logger.info(f"Setting new webhook: {webhook_url}")
+                await self.app.bot.set_webhook(url=webhook_url)
+            else:
+                logger.info("Webhook already set, skipping...")
             web_app = web.Application()
             web_app.router.add_post('/webhook', self.webhook_handler)
-            webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
-            await self.app.bot.set_webhook(url=webhook_url)
             runner = web.AppRunner(web_app)
             await runner.setup()
             site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8443)))
@@ -616,9 +630,9 @@ class TelegramBot:
             await self.mexc.close()
             if self.is_running:
                 try:
-                    await self.app.bot.delete_webhook(drop_pending_updates=True)
                     await self.app.stop()
                     await self.app.shutdown()
+                    logger.info("Webhook preserved to avoid re-setting")
                 except Exception as e:
                     logger.error(f"Error during shutdown: {e}")
                 self.is_running = False
@@ -639,9 +653,11 @@ class TelegramBot:
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     """Teknik göstergeleri hesaplar."""
     indicators = {}
+    fallback_interval = None  # Eksik veriler için yedek zaman dilimi
     for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
         kline = kline_data.get(interval, {}).get('data', [])
         if kline and len(kline) > 1:
+            fallback_interval = interval  # Geçerli veri varsa yedek olarak kullan
             try:
                 df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
                 df['close'] = df['close'].astype(float)
@@ -705,8 +721,8 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     pivot + range_high_low
                 ]
 
-                # Fibonacci Retracement (1d için)
-                if interval == '1d' and len(df) >= 100:
+                # Fibonacci Retracement
+                if len(df) >= 100:
                     high = df['high'].tail(100).max()
                     low = df['low'].tail(100).min()
                     diff = high - low
@@ -720,15 +736,19 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 else:
                     indicators['fibonacci_levels'] = [0.0, 0.0, 0.0, 0.0, 0.0]
 
-                # Ichimoku Cloud (1d için)
-                if interval == '1d':
-                    ichimoku = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=9, kijun=26, senkou=52)[0] if len(df) >= 52 else None
-                    indicators[f'ichimoku_{interval}'] = {
-                        'tenkan': ichimoku['ITS_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
-                        'kijun': ichimoku['ITK_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
-                        'senkou_a': ichimoku['ISA_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
-                        'senkou_b': ichimoku['ISB_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0
-                    }
+                # Ichimoku Cloud
+                if interval == '1d' and len(df) >= 52:
+                    try:
+                        ichimoku = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=9, kijun=26, senkou=52)[0]
+                        indicators[f'ichimoku_{interval}'] = {
+                            'tenkan': ichimoku['ITS_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
+                            'kijun': ichimoku['ITK_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
+                            'senkou_a': ichimoku['ISA_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0,
+                            'senkou_b': ichimoku['ISB_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty else 0.0
+                        }
+                    except Exception as e:
+                        logger.error(f"Ichimoku error for {symbol} ({interval}): {e}")
+                        indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
                 else:
                     indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
 
@@ -762,6 +782,39 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 'fibonacci_levels': [0.0, 0.0, 0.0, 0.0, 0.0],
                 f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
             })
+
+    # Destek/Direnç ve Fibonacci için yedek hesaplama (5m veya 60m'den)
+    if all(indicators['support_levels'][i] == 0.0 for i in range(3)) and fallback_interval:
+        kline = kline_data.get(fallback_interval, {}).get('data', [])
+        if kline and len(kline) > 1:
+            df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+            df['close'] = df['close'].astype(float)
+            df['high'] = df['high'].astype(float)
+            df['low'] = df['low'].astype(float)
+            last_row = df.iloc[-1]
+            pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
+            range_high_low = last_row['high'] - last_row['low']
+            indicators['support_levels'] = [
+                pivot - range_high_low * 0.5,
+                pivot - range_high_low * 0.618,
+                pivot - range_high_low
+            ]
+            indicators['resistance_levels'] = [
+                pivot + range_high_low * 0.5,
+                pivot + range_high_low * 0.618,
+                pivot + range_high_low
+            ]
+            if len(df) >= 100:
+                high = df['high'].tail(100).max()
+                low = df['low'].tail(100).min()
+                diff = high - low
+                indicators['fibonacci_levels'] = [
+                    low + diff * 0.236,
+                    low + diff * 0.382,
+                    low + diff * 0.5,
+                    low + diff * 0.618,
+                    low + diff * 0.786
+                ]
 
     if order_book.get('bids') and order_book.get('asks'):
         bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
