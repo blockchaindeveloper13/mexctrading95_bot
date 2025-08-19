@@ -36,7 +36,9 @@ COINS = {
     "AAVEUSDT": ["aave", "aaveusdt"],
     "BNBUSDT": ["bnb", "bnbusdt"],
     "ETHUSDT": ["eth", "ethusdt", "ethereum"],
-    "BTCUSDT": ["btc", "btcusdt", "bitcoin"]
+    "BTCUSDT": ["btc", "btcusdt", "bitcoin"],
+    "LINKUSDT": ["link", "linkusdt", "chainlink"],
+    "MKRUSDT": ["mkr", "mkrusdt", "maker"]
 }
 
 class MEXCClient:
@@ -92,6 +94,9 @@ class MEXCClient:
                 'btc_data': btc_data,
                 'eth_data': eth_data
             }
+        except Exception as e:
+            logger.error(f"Error fetching market data for {symbol}: {e}")
+            return None
         finally:
             await self.close()
 
@@ -141,7 +146,7 @@ class DeepSeekClient:
         support_levels = data['indicators'].get('support_levels', [0.0, 0.0, 0.0])
         resistance_levels = data['indicators'].get('resistance_levels', [0.0, 0.0, 0.0])
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit (çıkış), stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Her alan için tam bir sayı veya metin zorunlu.
+        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit (çıkış), stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik long ve short pozisyon parametrelerini yine de sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Her alan için tam bir sayı veya metin zorunlu.
 
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
@@ -176,7 +181,7 @@ class DeepSeekClient:
         ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
         🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
         🔗 ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['eth_correlation'] > 0.8 else 'Normal'})
-        💬 Yorum: [Analiz süreci, hangi göstergelere dayandığı, giriş/take-profit/stop-loss seçim gerekçesi]
+        💬 Yorum: [Analiz süreci, hangi göstergelere dayandığı, giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla.]
         """
         try:
             response = await asyncio.wait_for(
@@ -387,7 +392,10 @@ class TelegramBot:
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Coin butonlarını gösterir."""
-        keyboard = [[InlineKeyboardButton(coin, callback_data=f"analyze_{coin}")] for coin in COINS.keys()]
+        keyboard = [
+            [InlineKeyboardButton("BTCUSDT", callback_data="analyze_BTCUSDT"), InlineKeyboardButton("ETHUSDT", callback_data="analyze_ETHUSDT")],
+            *[[InlineKeyboardButton(coin, callback_data=f"analyze_{coin}")] for coin in COINS.keys() if coin not in ["BTCUSDT", "ETHUSDT"]]
+        ]
         response = (
             "📈 Kanka, hadi bakalım! Coin analizi mi yapalım, yoksa başka muhabbet mi çevirelim? 😎\n"
             "Örnek: 'ADA analiz', 'nasılsın', 'geçmiş', 'BTC korelasyonu'.\n"
@@ -594,10 +602,11 @@ class TelegramBot:
             await self.mexc.close()
             if self.is_running:
                 try:
+                    await self.app.bot.delete_webhook(drop_pending_updates=True)
                     await self.app.stop()
                     await self.app.shutdown()
-                except RuntimeError as e:
-                    logger.warning(f"Error during shutdown: {e}")
+                except Exception as e:
+                    logger.error(f"Error during shutdown: {e}")
                 self.is_running = False
             logger.info("Application shut down")
 
