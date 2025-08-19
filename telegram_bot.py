@@ -536,6 +536,20 @@ class Storage:
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     """Teknik göstergeleri hesaplar, eksik veya hatalı verilere karşı dayanıklı."""
     indicators = {}
+    
+    def safe_ema(series, period):
+        """Kendi EMA hesaplayıcımız, NoneType hatalarını önler."""
+        try:
+            weights = np.exp(np.linspace(-1.0, 0.0, period))
+            weights /= weights.sum()
+            result = np.convolve(series, weights, mode='valid')
+            # Uzunluk farkını doldur
+            result = np.pad(result, (period - 1, 0), mode='constant', constant_values=np.nan)
+            return pd.Series(result, index=series.index)
+        except Exception as e:
+            logger.error(f"{symbol} için EMA hatası: {e}")
+            return pd.Series([0.0] * len(series), index=series.index)
+
     for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
         kline = kline_data.get(interval, {}).get('data', [])
         if not kline or len(kline) < 2:
@@ -556,7 +570,10 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
         try:
             df = pd.DataFrame(kline, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
             logger.info(f"{symbol} için {interval} aralığında DataFrame: {df.head().to_dict()}")
-            df = validate_data(df)
+            
+            # Verileri float'a çevir ve geçerliliği kontrol et
+            df[['open', 'close', 'high', 'low', 'volume']] = df[['open', 'close', 'high', 'low', 'volume']].astype(float)
+            df = df.dropna()
             if df.empty:
                 logger.warning(f"{symbol} için {interval} aralığında geçerli veri yok")
                 indicators.update({
@@ -572,12 +589,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 })
                 continue
 
-            # Verilerin geçerli olduğunu doğrula
-            if df[['open', 'close', 'high', 'low', 'volume']].isnull().any().any():
-                logger.warning(f"{symbol} için {interval} aralığında eksik veri, geçersiz satırlar kaldırılıyor")
-                df = df.dropna()
-
-            # Yüksek ve düşük fiyatların doğruluğunu kontrol et
+            # High < low kontrolü
             if (df['high'] < df['low']).any():
                 logger.warning(f"{symbol} için {interval} aralığında hatalı veri: high < low")
                 df['high'], df['low'] = df[['high', 'low']].max(axis=1), df[['high', 'low']].min(axis=1)
@@ -619,16 +631,23 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 atr = pd.Series([0.0] * len(df))
             indicators[f'atr_{interval}'] = (float(atr.iloc[-1]) / float(df['close'].iloc[-1]) * 100) if not atr.empty and pd.notnull(atr.iloc[-1]) and df['close'].iloc[-1] != 0 else 0.0
 
-            # MACD
+            # MACD (Kendi EMA hesaplayıcısını kullan)
             try:
-                macd = ta.macd(df['close'], fast=12, slow=26, signal=9, fillna=0.0) if len(df) >= 26 else None
+                if len(df) >= 26:
+                    ema_12 = safe_ema(df['close'], 12)
+                    ema_26 = safe_ema(df['close'], 26)
+                    macd_line = ema_12 - ema_26
+                    signal_line = safe_ema(macd_line, 9) if not macd_line.isna().all() else pd.Series([0.0] * len(df))
+                    indicators[f'macd_{interval}'] = {
+                        'macd': float(macd_line.iloc[-1]) if pd.notnull(macd_line.iloc[-1]) else 0.0,
+                        'signal': float(signal_line.iloc[-1]) if pd.notnull(signal_line.iloc[-1]) else 0.0
+                    }
+                else:
+                    logger.warning(f"{symbol} için {interval} aralığında MACD için yetersiz veri ({len(df)} < 26)")
+                    indicators[f'macd_{interval}'] = {'macd': 0.0, 'signal': 0.0}
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında MACD hatası: {e}")
-                macd = None
-            indicators[f'macd_{interval}'] = {
-                'macd': float(macd['MACD_12_26_9'].iloc[-1]) if macd is not None and not macd.empty and pd.notnull(macd['MACD_12_26_9'].iloc[-1]) else 0.0,
-                'signal': float(macd['MACDs_12_26_9'].iloc[-1]) if macd is not None and not macd.empty and pd.notnull(macd['MACDs_12_26_9'].iloc[-1]) else 0.0
-            }
+                indicators[f'macd_{interval}'] = {'macd': 0.0, 'signal': 0.0}
 
             # Bollinger Bantları
             try:
@@ -695,7 +714,8 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
         kline = kline_data.get(interval, {}).get('data', [])
         if kline and len(kline) >= 30:
             df = pd.DataFrame(kline, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
-            df = validate_data(df)
+            df[['high', 'low']] = df[['high', 'low']].astype(float)
+            df = df.dropna()
             if not df.empty:
                 try:
                     high = df['high'].tail(30).max()
@@ -703,11 +723,11 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     if pd.notnull(high) and pd.notnull(low) and high >= low:
                         diff = high - low
                         indicators['fibonacci_levels'] = [
-                            low + diff * 0.236,
-                            low + diff * 0.382,
-                            low + diff * 0.5,
-                            low + diff * 0.618,
-                            low + diff * 0.786
+                            float(low + diff * 0.236),
+                            float(low + diff * 0.382),
+                            float(low + diff * 0.5),
+                            float(low + diff * 0.618),
+                            float(low + diff * 0.786)
                         ]
                     else:
                         indicators['fibonacci_levels'] = [0.0, 0.0, 0.0, 0.0, 0.0]
@@ -735,13 +755,15 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     if btc_data.get('data') and len(btc_data['data']) > 1:
         try:
             btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
-            btc_df = validate_data(btc_df)[['close']].astype({'close': float})
+            btc_df['close'] = btc_df['close'].astype(float)
+            btc_df = btc_df.dropna()
             if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
                 coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
-                coin_df = validate_data(coin_df)[['close']].astype({'close': float})
+                coin_df['close'] = coin_df['close'].astype(float)
+                coin_df = coin_df.dropna()
                 if len(coin_df) == len(btc_df):
                     correlation = coin_df['close'].corr(btc_df['close'])
-                    indicators['btc_correlation'] = correlation if not np.isnan(correlation) else 0.0
+                    indicators['btc_correlation'] = float(correlation) if not np.isnan(correlation) else 0.0
                 else:
                     indicators['btc_correlation'] = 0.0
             else:
@@ -756,13 +778,15 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     if eth_data.get('data') and len(eth_data['data']) > 1:
         try:
             eth_df = pd.DataFrame(eth_data['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
-            eth_df = validate_data(eth_df)[['close']].astype({'close': float})
+            eth_df['close'] = eth_df['close'].astype(float)
+            eth_df = eth_df.dropna()
             if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
                 coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
-                coin_df = validate_data(coin_df)[['close']].astype({'close': float})
+                coin_df['close'] = coin_df['close'].astype(float)
+                coin_df = coin_df.dropna()
                 if len(coin_df) == len(eth_df):
                     correlation = coin_df['close'].corr(eth_df['close'])
-                    indicators['eth_correlation'] = correlation if not np.isnan(correlation) else 0.0
+                    indicators['eth_correlation'] = float(correlation) if not np.isnan(correlation) else 0.0
                 else:
                     indicators['eth_correlation'] = 0.0
             else:
