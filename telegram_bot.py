@@ -472,8 +472,9 @@ class Storage:
         except sqlite3.Error as e:
             logger.error(f"SQLite error while cleaning old data: {e}")
 
+# ... (Önceki sınıflar aynı: KuCoinClient, MEXCClient, DeepSeekClient, Storage)
+
 class TelegramBot:
-    """Telegram botu."""
     def __init__(self):
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
         self.storage = Storage()
@@ -487,9 +488,9 @@ class TelegramBot:
         self.active_analyses = {}
         self.shutdown_event = asyncio.Event()
         self.is_running = False
+        self.analysis_lock = asyncio.Lock()  # Tek analiz
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Coin butonlarını gösterir."""
         keyboard = [
             [InlineKeyboardButton("BTCUSDT", callback_data="analyze_BTCUSDT"), InlineKeyboardButton("ETHUSDT", callback_data="analyze_ETHUSDT")],
             *[[InlineKeyboardButton(coin, callback_data=f"analyze_{coin}")] for coin in COINS.keys() if coin not in ["BTCUSDT", "ETHUSDT"]]
@@ -502,7 +503,6 @@ class TelegramBot:
         self.storage.save_conversation(update.effective_chat.id, update.message.text, response)
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Buton tıklamalarını işler."""
         query = update.callback_query
         try:
             await query.answer()
@@ -510,12 +510,13 @@ class TelegramBot:
             logger.error(f"Error answering callback query: {e}")
         symbol = query.data.replace("analyze_", "")
         analysis_key = f"{symbol}_futures_{update.effective_chat.id}"
-        if analysis_key in self.active_analyses:
-            response = f"⏳ Kanka, {symbol} için analiz yapıyorum, az sabret! 😅"
-            await query.message.reply_text(response)
-            self.storage.save_conversation(update.effective_chat.id, query.data, response, symbol)
-            return
-        self.active_analyses[analysis_key] = True
+        async with self.analysis_lock:
+            if analysis_key in self.active_analyses:
+                response = f"⏳ Kanka, {symbol} için analiz yapıyorum, az sabret! 😅"
+                await query.message.reply_text(response)
+                self.storage.save_conversation(update.effective_chat.id, query.data, response, symbol)
+                return
+            self.active_analyses[analysis_key] = True
         try:
             if not await self.mexc.validate_symbol(symbol):
                 response = f"😓 Kanka, {symbol} piyasada yok gibi. Başka coin mi bakalım?"
@@ -529,19 +530,17 @@ class TelegramBot:
             if task is not None:
                 asyncio.create_task(task)
         finally:
-            del self.active_analyses[analysis_key]
+            async with self.analysis_lock:
+                del self.active_analyses[analysis_key]
 
     async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Tüm metin mesajlarını işler ve doğal yanıtlar üretir."""
         text = update.message.text.lower()
         chat_id = update.effective_chat.id
         logger.info(f"Received message: {text}")
 
-        # Konuşma geçmişini al
         history = self.storage.get_conversation_history(chat_id, limit=3)
         context_info = f"Son konuşmalar: {history}"
 
-        # Geçmiş konuşmaları gösterme
         if "geçmiş" in text:
             history = self.storage.get_conversation_history(chat_id, limit=10)
             if not history:
@@ -557,35 +556,31 @@ class TelegramBot:
             self.storage.save_conversation(chat_id, text, response)
             return
 
-        # Coin sembolünü bul
         symbol = None
         for coin, aliases in COINS.items():
             if any(alias in text for alias in aliases):
                 symbol = coin
                 break
 
-        # Eğer sembol bulunmadıysa, son konuşmadan sembolü çek
         if not symbol:
             symbol = self.storage.get_last_symbol(chat_id)
             if symbol:
                 logger.info(f"Using last symbol {symbol} from conversation history")
 
-        # Anahtar kelimeler
         keywords = ['analiz', 'trend', 'long', 'short', 'destek', 'direnç', 'yorum', 'neden', 'korelasyon']
         matched_keyword = next((k for k in keywords if k in text), None)
 
-        # Doğal dil yanıtı için bağlam
         context_info += f"\nSon {symbol} analizi: {self.storage.get_latest_analysis(symbol) or 'Yok' if symbol else 'Yok'}"
 
-        # Analiz istenirse
         if matched_keyword == 'analiz' and symbol:
             analysis_key = f"{symbol}_futures_{chat_id}"
-            if analysis_key in self.active_analyses:
-                response = f"⏳ Kanka, {symbol} için analiz yapıyorum, az bekle! 😅"
-                await update.message.reply_text(response)
-                self.storage.save_conversation(chat_id, text, response, symbol)
-                return
-            self.active_analyses[analysis_key] = True
+            async with self.analysis_lock:
+                if analysis_key in self.active_analyses:
+                    response = f"⏳ Kanka, {symbol} için analiz yapıyorum, az bekle! 😅"
+                    await update.message.reply_text(response)
+                    self.storage.save_conversation(chat_id, text, response, symbol)
+                    return
+                self.active_analyses[analysis_key] = True
             try:
                 if not await self.mexc.validate_symbol(symbol):
                     response = f"😓 Kanka, {symbol} piyasada yok gibi. Başka coin mi bakalım?"
@@ -599,10 +594,10 @@ class TelegramBot:
                 if task is not None:
                     asyncio.create_task(task)
             finally:
-                del self.active_analyses[analysis_key]
+                async with self.analysis_lock:
+                    del self.active_analyses[analysis_key]
             return
 
-        # Korelasyon sorusu
         if matched_keyword == 'korelasyon' and symbol:
             current_analysis = self.storage.get_latest_analysis(symbol)
             response = await self.deepseek.generate_natural_response(text, context_info, symbol)
@@ -617,7 +612,6 @@ class TelegramBot:
             self.storage.save_conversation(chat_id, text, response, symbol)
             return
 
-        # Diğer anahtar kelimeler veya sembol varsa
         if symbol and matched_keyword:
             current_analysis = self.storage.get_latest_analysis(symbol)
             response = await self.deepseek.generate_natural_response(text, context_info, symbol)
@@ -647,13 +641,11 @@ class TelegramBot:
             self.storage.save_conversation(chat_id, text, response, symbol)
             return
 
-        # Genel sohbet için doğal yanıt
         response = await self.deepseek.generate_natural_response(text, context_info, symbol)
         await update.message.reply_text(response)
         self.storage.save_conversation(chat_id, text, response, symbol)
 
     async def process_coin(self, symbol, chat_id):
-        """Coin için analiz yapar."""
         try:
             data = await self.mexc.fetch_market_data(symbol)
             if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']):
@@ -667,7 +659,7 @@ class TelegramBot:
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             self.storage.save_analysis(symbol, data)
             self.storage.save_conversation(chat_id, symbol, message, symbol)
-            self.storage.clean_old_data()  # Bellek optimizasyonu
+            self.storage.clean_old_data()  # Her analizden sonra temizlik
             return data
         except Exception as e:
             logger.error(f"Error processing coin {symbol}: {e}")
@@ -675,9 +667,13 @@ class TelegramBot:
             await self.app.bot.send_message(chat_id=chat_id, text=response)
             self.storage.save_conversation(chat_id, symbol, response, symbol)
             return
+        finally:
+            # Bellek temizliği
+            data = None
+            import gc
+            gc.collect()
 
     async def run(self):
-        """Webhook sunucusunu başlatır."""
         try:
             logger.info("Starting application...")
             self.is_running = True
@@ -685,7 +681,6 @@ class TelegramBot:
             await self.app.initialize()
             await self.app.start()
             webhook_url = f"https://{os.getenv('HEROKU_APP_NAME')}.herokuapp.com/webhook"
-            # Webhook durumunu kontrol et
             current_webhook = await self.app.bot.get_webhook_info()
             if current_webhook.url != webhook_url:
                 logger.info(f"Setting new webhook: {webhook_url}")
@@ -716,7 +711,6 @@ class TelegramBot:
             logger.info("Application shut down")
 
     async def webhook_handler(self, request):
-        """Webhook isteklerini işler."""
         try:
             raw_data = await request.json()
             update = Update.de_json(raw_data, self.app.bot)
@@ -728,7 +722,6 @@ class TelegramBot:
             return web.Response(text="Error", status=500)
 
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
-    """Teknik göstergeleri hesaplar."""
     indicators = {}
     fallback_interval = None
     for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
@@ -736,9 +729,24 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
         if kline and len(kline) > 1:
             fallback_interval = interval
             try:
-                # Sadece gerekli sütunları kullan
+                # Veri çerçevesini oluştururken null kontrolü
                 df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
+                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].dropna()  # Null satırları kaldır
+                if df.empty:
+                    logger.warning(f"No valid data after dropping NaN for {symbol} ({interval})")
+                    indicators.update({
+                        f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
+                        f'rsi_{interval}': 0.0,
+                        f'atr_{interval}': 0.0,
+                        f'macd_{interval}': {'macd': 0.0, 'signal': 0.0},
+                        f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
+                        f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
+                        f'obv_{interval}': 0.0,
+                        f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
+                    })
+                    continue
+
+                df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
 
                 # Hareketli Ortalamalar
                 sma_50 = ta.sma(df['close'], length=50) if len(df) >= 50 else None
@@ -754,7 +762,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
 
                 # ATR
                 atr = ta.atr(df['high'], df['low'], df['close'], length=14) if len(df) >= 14 else None
-                indicators[f'atr_{interval}'] = (atr.iloc[-1] / df['close'].iloc[-1] * 100) if atr is not None and not atr.empty else 0.0
+                indicators[f'atr_{interval}'] = (atr.iloc[-1] / df['close'].iloc[-1] * 100) if atr is not None and not atr.empty and df['close'].iloc[-1] != 0 else 0.0
 
                 # MACD
                 macd = ta.macd(df['close'], fast=12, slow=26, signal=9) if len(df) >= 26 else None
@@ -783,21 +791,26 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
 
                 # Destek ve Direnç
                 last_row = df.iloc[-1]
-                pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
-                range_high_low = last_row['high'] - last_row['low']
-                indicators['support_levels'] = [
-                    pivot - range_high_low * 0.5,
-                    pivot - range_high_low * 0.618,
-                    pivot - range_high_low
-                ]
-                indicators['resistance_levels'] = [
-                    pivot + range_high_low * 0.5,
-                    pivot + range_high_low * 0.618,
-                    pivot + range_high_low
-                ]
+                if pd.notnull(last_row['high']) and pd.notnull(last_row['low']) and pd.notnull(last_row['close']):
+                    pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
+                    range_high_low = last_row['high'] - last_row['low']
+                    indicators['support_levels'] = [
+                        pivot - range_high_low * 0.5,
+                        pivot - range_high_low * 0.618,
+                        pivot - range_high_low
+                    ]
+                    indicators['resistance_levels'] = [
+                        pivot + range_high_low * 0.5,
+                        pivot + range_high_low * 0.618,
+                        pivot + range_high_low
+                    ]
+                else:
+                    indicators['support_levels'] = [0.0, 0.0, 0.0]
+                    indicators['resistance_levels'] = [0.0, 0.0, 0.0]
+                    logger.warning(f"Invalid high/low/close for {symbol} ({interval})")
 
                 # Fibonacci Retracement
-                if len(df) >= 30:
+                if len(df) >= 30 and pd.notnull(df['high'].tail(30).max()) and pd.notnull(df['low'].tail(30).min()):
                     high = df['high'].tail(30).max()
                     low = df['low'].tail(30).min()
                     diff = high - low
@@ -823,10 +836,9 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                         }
                     except Exception as e:
                         logger.error(f"Ichimoku error for {symbol} ({interval}): {e}")
-                        # 60m’den Ichimoku türet
                         if '60m' in kline_data and kline_data['60m'].get('data'):
                             df_60m = pd.DataFrame(kline_data['60m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-                            df_60m = df_60m[['timestamp', 'open', 'high', 'low', 'close', 'volume']].astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
+                            df_60m = df_60m[['timestamp', 'open', 'high', 'low', 'close', 'volume']].dropna()
                             if len(df_60m) >= 52:
                                 try:
                                     ichimoku = ta.ichimoku(df_60m['high'], df_60m['low'], df_60m['close'], tenkan=9, kijun=26, senkou=52)[0]
@@ -871,42 +883,41 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
                 f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
                 f'obv_{interval}': 0.0,
-                'support_levels': [0.0, 0.0, 0.0],
-                'resistance_levels': [0.0, 0.0, 0.0],
-                'fibonacci_levels': [0.0, 0.0, 0.0, 0.0, 0.0],
                 f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
             })
 
-    # Destek/Direnç ve Fibonacci için yedek hesaplama (60m’den)
+    # Destek/Direnç ve Fibonacci için yedek hesaplama
     if all(indicators['support_levels'][i] == 0.0 for i in range(3)) and fallback_interval:
         kline = kline_data.get(fallback_interval, {}).get('data', [])
         if kline and len(kline) > 1:
             df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-            df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
-            last_row = df.iloc[-1]
-            pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
-            range_high_low = last_row['high'] - last_row['low']
-            indicators['support_levels'] = [
-                pivot - range_high_low * 0.5,
-                pivot - range_high_low * 0.618,
-                pivot - range_high_low
-            ]
-            indicators['resistance_levels'] = [
-                pivot + range_high_low * 0.5,
-                pivot + range_high_low * 0.618,
-                pivot + range_high_low
-            ]
-            if len(df) >= 30:
-                high = df['high'].tail(30).max()
-                low = df['low'].tail(30).min()
-                diff = high - low
-                indicators['fibonacci_levels'] = [
-                    low + diff * 0.236,
-                    low + diff * 0.382,
-                    low + diff * 0.5,
-                    low + diff * 0.618,
-                    low + diff * 0.786
-                ]
+            df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].dropna()
+            if not df.empty:
+                last_row = df.iloc[-1]
+                if pd.notnull(last_row['high']) and pd.notnull(last_row['low']) and pd.notnull(last_row['close']):
+                    pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
+                    range_high_low = last_row['high'] - last_row['low']
+                    indicators['support_levels'] = [
+                        pivot - range_high_low * 0.5,
+                        pivot - range_high_low * 0.618,
+                        pivot - range_high_low
+                    ]
+                    indicators['resistance_levels'] = [
+                        pivot + range_high_low * 0.5,
+                        pivot + range_high_low * 0.618,
+                        pivot + range_high_low
+                    ]
+                    if len(df) >= 30 and pd.notnull(df['high'].tail(30).max()) and pd.notnull(df['low'].tail(30).min()):
+                        high = df['high'].tail(30).max()
+                        low = df['low'].tail(30).min()
+                        diff = high - low
+                        indicators['fibonacci_levels'] = [
+                            low + diff * 0.236,
+                            low + diff * 0.382,
+                            low + diff * 0.5,
+                            low + diff * 0.618,
+                            low + diff * 0.786
+                        ]
 
     if order_book.get('bids') and order_book.get('asks'):
         bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
@@ -919,12 +930,15 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     # BTC korelasyonu
     if btc_data.get('data') and len(btc_data['data']) > 1:
         btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-        btc_df = btc_df[['close']].astype({'close': float})
+        btc_df = btc_df[['close']].dropna().astype({'close': float})
         if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
             coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-            coin_df = coin_df[['close']].astype({'close': float})
-            correlation = coin_df['close'].corr(btc_df['close'])
-            indicators['btc_correlation'] = correlation if not np.isnan(correlation) else 0.0
+            coin_df = coin_df[['close']].dropna().astype({'close': float})
+            if len(coin_df) == len(btc_df):
+                correlation = coin_df['close'].corr(btc_df['close'])
+                indicators['btc_correlation'] = correlation if not np.isnan(correlation) else 0.0
+            else:
+                indicators['btc_correlation'] = 0.0
         else:
             indicators['btc_correlation'] = 0.0
     else:
@@ -933,12 +947,15 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     # ETH korelasyonu
     if eth_data.get('data') and len(eth_data['data']) > 1:
         eth_df = pd.DataFrame(eth_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-        eth_df = eth_df[['close']].astype({'close': float})
+        eth_df = eth_df[['close']].dropna().astype({'close': float})
         if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
             coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-            coin_df = coin_df[['close']].astype({'close': float})
-            correlation = coin_df['close'].corr(eth_df['close'])
-            indicators['eth_correlation'] = correlation if not np.isnan(correlation) else 0.0
+            coin_df = coin_df[['close']].dropna().astype({'close': float})
+            if len(coin_df) == len(eth_df):
+                correlation = coin_df['close'].corr(eth_df['close'])
+                indicators['eth_correlation'] = correlation if not np.isnan(correlation) else 0.0
+            else:
+                indicators['eth_correlation'] = 0.0
         else:
             indicators['eth_correlation'] = 0.0
     else:
