@@ -534,7 +534,7 @@ class Storage:
             logger.error(f"SQLite error while cleaning old data: {e}")
 
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
-    """Teknik göstergeleri hesaplar, eksik veya hatalı verilere karşı dayanıklı."""
+    """Teknik göstergeleri hesaplar, sadece uygun zaman dilimlerinde ve yeterli veriyle."""
     indicators = {}
     
     def safe_ema(series, period):
@@ -543,7 +543,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             weights = np.exp(np.linspace(-1.0, 0.0, period))
             weights /= weights.sum()
             result = np.convolve(series, weights, mode='valid')
-            # Uzunluk farkını doldur
             result = np.pad(result, (period - 1, 0), mode='constant', constant_values=np.nan)
             return pd.Series(result, index=series.index)
         except Exception as e:
@@ -602,10 +601,18 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 'close': float(last_row['close']) if pd.notnull(last_row['close']) else 0.0
             }
 
-            # Hareketli Ortalamalar
+            # Hareketli Ortalamalar (sadece uygun aralıklarda)
             try:
-                sma_50 = ta.sma(df['close'], length=50, fillna=0.0) if len(df) >= 50 else pd.Series([0.0] * len(df))
-                sma_200 = ta.sma(df['close'], length=200, fillna=0.0) if len(df) >= 200 else pd.Series([0.0] * len(df))
+                if interval in ['1d', '1w'] and len(df) >= 50:
+                    sma_50 = ta.sma(df['close'], length=50, fillna=0.0)
+                else:
+                    logger.warning(f"{symbol} için {interval} aralığında MA50 için yetersiz veri ({len(df)} < 50)")
+                    sma_50 = pd.Series([0.0] * len(df))
+                if interval == '1w' and len(df) >= 200:
+                    sma_200 = ta.sma(df['close'], length=200, fillna=0.0)
+                else:
+                    logger.warning(f"{symbol} için {interval} aralığında MA200 için yetersiz veri ({len(df)} < 200)")
+                    sma_200 = pd.Series([0.0] * len(df))
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında SMA hatası: {e}")
                 sma_50 = pd.Series([0.0] * len(df))
@@ -631,7 +638,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 atr = pd.Series([0.0] * len(df))
             indicators[f'atr_{interval}'] = (float(atr.iloc[-1]) / float(df['close'].iloc[-1]) * 100) if not atr.empty and pd.notnull(atr.iloc[-1]) and df['close'].iloc[-1] != 0 else 0.0
 
-            # MACD (Kendi EMA hesaplayıcısını kullan)
+            # MACD
             try:
                 if len(df) >= 26:
                     ema_12 = safe_ema(df['close'], 12)
@@ -679,8 +686,8 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 obv = pd.Series([0.0] * len(df))
             indicators[f'obv_{interval}'] = float(obv.iloc[-1]) if not obv.empty and pd.notnull(obv.iloc[-1]) else 0.0
 
-            # Ichimoku Cloud
-            if interval == '1d' and len(df) >= 52:
+            # Ichimoku Cloud (sadece 1d ve 1w için, yeterli veri varsa)
+            if interval in ['1d', '1w'] and len(df) >= 52:
                 try:
                     ichimoku = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=9, kijun=26, senkou=52)[0]
                     indicators[f'ichimoku_{interval}'] = {
@@ -693,6 +700,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     logger.error(f"{symbol} için {interval} aralığında Ichimoku hatası: {e}")
                     indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
             else:
+                logger.warning(f"{symbol} için {interval} aralığında Ichimoku için yetersiz veri ({len(df)} < 52)")
                 indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
 
         except Exception as e:
@@ -736,6 +744,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     indicators['fibonacci_levels'] = [0.0, 0.0, 0.0, 0.0, 0.0]
                 break
         else:
+            logger.warning(f"{symbol} için Fibonacci için yetersiz veri ({len(kline)} < 30)")
             indicators['fibonacci_levels'] = [0.0, 0.0, 0.0, 0.0, 0.0]
 
     # Sipariş Defteri Oranı
@@ -765,6 +774,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     correlation = coin_df['close'].corr(btc_df['close'])
                     indicators['btc_correlation'] = float(correlation) if not np.isnan(correlation) else 0.0
                 else:
+                    logger.warning(f"{symbol} için BTC korelasyonu: Veri uzunlukları uyuşmuyor ({len(coin_df)} vs {len(btc_df)})")
                     indicators['btc_correlation'] = 0.0
             else:
                 indicators['btc_correlation'] = 0.0
@@ -788,6 +798,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     correlation = coin_df['close'].corr(eth_df['close'])
                     indicators['eth_correlation'] = float(correlation) if not np.isnan(correlation) else 0.0
                 else:
+                    logger.warning(f"{symbol} için ETH korelasyonu: Veri uzunlukları uyuşmuyor ({len(coin_df)} vs {len(eth_df)})")
                     indicators['eth_correlation'] = 0.0
             else:
                 indicators['eth_correlation'] = 0.0
