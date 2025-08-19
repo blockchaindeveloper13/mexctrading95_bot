@@ -52,16 +52,25 @@ def validate_data(df):
         logger.warning("Eksik veri tespit edildi, ileri ve geri doldurma yapılıyor.")
         df = df.fillna(method='ffill').fillna(method='bfill')
 
-    # High < Low kontrolü
+    # High < Low kontrolü ve düzeltme
     invalid_rows = df[df['high'] < df['low']]
     if not invalid_rows.empty:
         logger.warning(f"Geçersiz veri (high < low): {invalid_rows[['timestamp', 'high', 'low']].to_dict()}")
-        df.loc[df['high'] < df['low'], 'high'] = df[['open', 'close', 'high', 'low']].max(axis=1)
+        # High ve Low sütunlarını yer değiştir
+        df.loc[df['high'] < df['low'], ['high', 'low']] = df.loc[df['high'] < df['low'], ['low', 'high']].values
+        logger.info("High ve Low sütunları yer değiştirildi.")
 
     # Sıfır veya negatif fiyat kontrolü
     if (df[['open', 'high', 'low', 'close']] <= 0).any().any():
         logger.warning("Sıfır veya negatif fiyat tespit edildi, bu satırlar kaldırılıyor.")
         df = df[df[['open', 'high', 'low', 'close']].gt(0).all(axis=1)]
+
+    # Ekstra kontrol: High ve Low'un mantıklılığını doğrula
+    df['max_price'] = df[['open', 'close', 'high', 'low']].max(axis=1)
+    df['min_price'] = df[['open', 'close', 'high', 'low']].min(axis=1)
+    df.loc[df['high'] != df['max_price'], 'high'] = df['max_price']
+    df.loc[df['low'] != df['min_price'], 'low'] = df['min_price']
+    df = df.drop(columns=['max_price', 'min_price'])
 
     return df
 
@@ -83,8 +92,8 @@ class KuCoinClient:
         await self.initialize()
         try:
             kucoin_intervals = {
-                '5m': '5min', '15m': '15min', '60m': '1hour', '1d': '1day',
-                '6h': '6hour', '12h': '12hour', '1w': '1week'
+                '5m': '5min', '15m': '15min', '60m': '1hour', '6h': '6hour',
+                '12h': '12hour', '1d': '1day', '1w': '1week'
             }
             if interval not in kucoin_intervals:
                 logger.error(f"Geçersiz aralık {interval} KuCoin için")
@@ -97,13 +106,20 @@ class KuCoinClient:
                     response_data = await response.json()
                     logger.info(f"Raw KuCoin response: {response_data}")
                     if response_data['code'] == '200000' and response_data['data']:
+                        # API formatı: [timestamp, open, close, high, low, volume, turnover]
                         data = [
                             [int(candle[0]) * 1000, float(candle[1]), float(candle[2]), float(candle[3]),
                              float(candle[4]), float(candle[5]), int(candle[0]) * 1000, float(candle[6])]
                             for candle in response_data['data']
                         ][:count]
-                        logger.info(f"KuCoin kline response for {symbol} ({interval}): {data[:1]}...")
-                        return {'data': data}
+                        # DataFrame'e doğru sütun sırasıyla atama
+                        df = pd.DataFrame(data, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
+                        df = validate_data(df)  # Veriyi doğrula
+                        if df.empty:
+                            logger.warning(f"Geçersiz veya boş veri sonrası DataFrame boş: {symbol} ({interval})")
+                            return {'data': []}
+                        logger.info(f"KuCoin kline response for {symbol} ({interval}): {df.head().to_dict()}")
+                        return {'data': df.values.tolist()}
                     else:
                         logger.warning(f"No KuCoin kline data for {symbol} ({interval}): {response_data}")
                         return {'data': []}
@@ -526,7 +542,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             logger.warning(f"No or insufficient kline data for {symbol} ({interval})")
             indicators.update({
                 f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
-                f'rsi_{interval}': 0.0,
+                f'rsi_{interval}': 50.0,
                 f'atr_{interval}': 0.0,
                 f'macd_{interval}': {'macd': 0.0, 'signal': 0.0},
                 f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
@@ -538,14 +554,14 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             continue
 
         try:
-            df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+            df = pd.DataFrame(kline, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
             logger.info(f"DataFrame for {symbol} ({interval}): {df.head().to_dict()}")
             df = validate_data(df)
             if df.empty:
                 logger.warning(f"Empty DataFrame after validation for {symbol} ({interval})")
                 indicators.update({
                     f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
-                    f'rsi_{interval}': 0.0,
+                    f'rsi_{interval}': 50.0,
                     f'atr_{interval}': 0.0,
                     f'macd_{interval}': {'macd': 0.0, 'signal': 0.0},
                     f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
@@ -555,6 +571,11 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     f'raw_data_{interval}': {'high': 0.0, 'low': 0.0, 'close': 0.0}
                 })
                 continue
+
+            # Verilerin geçerli olduğunu doğrula
+            if df[['open', 'close', 'high', 'low', 'volume']].isnull().any().any():
+                logger.warning(f"Eksik veri tespit edildi, geçersiz satırlar kaldırılıyor: {symbol} ({interval})")
+                df = df.dropna()
 
             # Ham verileri sakla
             last_row = df.iloc[-1]
@@ -568,52 +589,52 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             sma_50 = ta.sma(df['close'], length=50, fillna=0.0) if len(df) >= 50 else pd.Series([0.0] * len(df))
             sma_200 = ta.sma(df['close'], length=200, fillna=0.0) if len(df) >= 200 else pd.Series([0.0] * len(df))
             indicators[f'ma_{interval}'] = {
-                'ma50': sma_50.iloc[-1] if not sma_50.empty and pd.notnull(sma_50.iloc[-1]) else 0.0,
-                'ma200': sma_200.iloc[-1] if not sma_200.empty and pd.notnull(sma_200.iloc[-1]) else 0.0
+                'ma50': float(sma_50.iloc[-1]) if not sma_50.empty and pd.notnull(sma_50.iloc[-1]) else 0.0,
+                'ma200': float(sma_200.iloc[-1]) if not sma_200.empty and pd.notnull(sma_200.iloc[-1]) else 0.0
             }
 
             # RSI
             rsi = ta.rsi(df['close'], length=14, fillna=50.0) if len(df) >= 14 else pd.Series([50.0] * len(df))
-            indicators[f'rsi_{interval}'] = rsi.iloc[-1] if not rsi.empty and pd.notnull(rsi.iloc[-1]) else 50.0
+            indicators[f'rsi_{interval}'] = float(rsi.iloc[-1]) if not rsi.empty and pd.notnull(rsi.iloc[-1]) else 50.0
 
             # ATR
             atr = ta.atr(df['high'], df['low'], df['close'], length=14, fillna=0.0) if len(df) >= 14 else pd.Series([0.0] * len(df))
-            indicators[f'atr_{interval}'] = (atr.iloc[-1] / df['close'].iloc[-1] * 100) if not atr.empty and pd.notnull(atr.iloc[-1]) and df['close'].iloc[-1] != 0 else 0.0
+            indicators[f'atr_{interval}'] = (float(atr.iloc[-1]) / float(df['close'].iloc[-1]) * 100) if not atr.empty and pd.notnull(atr.iloc[-1]) and df['close'].iloc[-1] != 0 else 0.0
 
             # MACD
             macd = ta.macd(df['close'], fast=12, slow=26, signal=9, fillna=0.0) if len(df) >= 26 else None
             indicators[f'macd_{interval}'] = {
-                'macd': macd['MACD_12_26_9'].iloc[-1] if macd is not None and not macd.empty and pd.notnull(macd['MACD_12_26_9'].iloc[-1]) else 0.0,
-                'signal': macd['MACDs_12_26_9'].iloc[-1] if macd is not None and not macd.empty and pd.notnull(macd['MACDs_12_26_9'].iloc[-1]) else 0.0
+                'macd': float(macd['MACD_12_26_9'].iloc[-1]) if macd is not None and not macd.empty and pd.notnull(macd['MACD_12_26_9'].iloc[-1]) else 0.0,
+                'signal': float(macd['MACDs_12_26_9'].iloc[-1]) if macd is not None and not macd.empty and pd.notnull(macd['MACDs_12_26_9'].iloc[-1]) else 0.0
             }
 
             # Bollinger Bantları
             bbands = ta.bbands(df['close'], length=20, std=2, fillna=0.0) if len(df) >= 20 else None
             indicators[f'bbands_{interval}'] = {
-                'upper': bbands['BBU_20_2.0'].iloc[-1] if bbands is not None and not bbands.empty and pd.notnull(bbands['BBU_20_2.0'].iloc[-1]) else 0.0,
-                'lower': bbands['BBL_20_2.0'].iloc[-1] if bbands is not None and not bbands.empty and pd.notnull(bbands['BBL_20_2.0'].iloc[-1]) else 0.0
+                'upper': float(bbands['BBU_20_2.0'].iloc[-1]) if bbands is not None and not bbands.empty and pd.notnull(bbands['BBU_20_2.0'].iloc[-1]) else 0.0,
+                'lower': float(bbands['BBL_20_2.0'].iloc[-1]) if bbands is not None and not bbands.empty and pd.notnull(bbands['BBL_20_2.0'].iloc[-1]) else 0.0
             }
 
             # Stochastic Oscillator
             stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3, smooth_k=3, fillna=0.0) if len(df) >= 14 else None
             indicators[f'stoch_{interval}'] = {
-                'k': stoch['STOCHk_14_3_3'].iloc[-1] if stoch is not None and not stoch.empty and pd.notnull(stoch['STOCHk_14_3_3'].iloc[-1]) else 0.0,
-                'd': stoch['STOCHd_14_3_3'].iloc[-1] if stoch is not None and not stoch.empty and pd.notnull(stoch['STOCHd_14_3_3'].iloc[-1]) else 0.0
+                'k': float(stoch['STOCHk_14_3_3'].iloc[-1]) if stoch is not None and not stoch.empty and pd.notnull(stoch['STOCHk_14_3_3'].iloc[-1]) else 0.0,
+                'd': float(stoch['STOCHd_14_3_3'].iloc[-1]) if stoch is not None and not stoch.empty and pd.notnull(stoch['STOCHd_14_3_3'].iloc[-1]) else 0.0
             }
 
             # OBV
             obv = ta.obv(df['close'], df['volume'], fillna=0.0) if len(df) >= 1 else pd.Series([0.0] * len(df))
-            indicators[f'obv_{interval}'] = obv.iloc[-1] if not obv.empty and pd.notnull(obv.iloc[-1]) else 0.0
+            indicators[f'obv_{interval}'] = float(obv.iloc[-1]) if not obv.empty and pd.notnull(obv.iloc[-1]) else 0.0
 
             # Ichimoku Cloud
             if interval == '1d' and len(df) >= 52:
                 try:
                     ichimoku = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=9, kijun=26, senkou=52)[0]
                     indicators[f'ichimoku_{interval}'] = {
-                        'tenkan': ichimoku['ITS_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITS_9'].iloc[-1]) else 0.0,
-                        'kijun': ichimoku['ITK_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITK_26'].iloc[-1]) else 0.0,
-                        'senkou_a': ichimoku['ISA_9'].iloc[-1] if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISA_9'].iloc[-1]) else 0.0,
-                        'senkou_b': ichimoku['ISB_26'].iloc[-1] if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISB_26'].iloc[-1]) else 0.0
+                        'tenkan': float(ichimoku['ITS_9'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITS_9'].iloc[-1]) else 0.0,
+                        'kijun': float(ichimoku['ITK_26'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITK_26'].iloc[-1]) else 0.0,
+                        'senkou_a': float(ichimoku['ISA_9'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISA_9'].iloc[-1]) else 0.0,
+                        'senkou_b': float(ichimoku['ISB_26'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISB_26'].iloc[-1]) else 0.0
                     }
                 except Exception as e:
                     logger.error(f"Ichimoku error for {symbol} ({interval}): {e}")
@@ -639,7 +660,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
         kline = kline_data.get(interval, {}).get('data', [])
         if kline and len(kline) >= 30:
-            df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+            df = pd.DataFrame(kline, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
             df = validate_data(df)
             if not df.empty and pd.notnull(df['high'].tail(30).max()) and pd.notnull(df['low'].tail(30).min()):
                 high = df['high'].tail(30).max()
@@ -667,10 +688,10 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
 
     # BTC korelasyonu
     if btc_data.get('data') and len(btc_data['data']) > 1:
-        btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+        btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
         btc_df = validate_data(btc_df)[['close']].astype({'close': float})
         if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
-            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
             coin_df = validate_data(coin_df)[['close']].astype({'close': float})
             if len(coin_df) == len(btc_df):
                 correlation = coin_df['close'].corr(btc_df['close'])
@@ -684,10 +705,10 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
 
     # ETH korelasyonu
     if eth_data.get('data') and len(eth_data['data']) > 1:
-        eth_df = pd.DataFrame(eth_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+        eth_df = pd.DataFrame(eth_data['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
         eth_df = validate_data(eth_df)[['close']].astype({'close': float})
         if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
-            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
+            coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
             coin_df = validate_data(coin_df)[['close']].astype({'close': float})
             if len(coin_df) == len(eth_df):
                 correlation = coin_df['close'].corr(eth_df['close'])
