@@ -285,6 +285,14 @@ class DeepSeekClient:
                 f"  - OBV: {obv:.2f}\n"
             )
 
+        # Ham verileri önceden formatla
+        raw_data_formatted = []
+        for interval in raw_data:
+            high = raw_data[interval]['high']
+            low = raw_data[interval]['low']
+            close = raw_data[interval]['close']
+            raw_data_formatted.append(f"{interval}: High=${high:.2f}, Low=${low:.2f}, Close=${close:.2f}")
+
         # Her zaman dilimi için analiz formatını ayrı ayrı oluştur
         timeframe_analyses = []
         for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
@@ -325,7 +333,7 @@ class DeepSeekClient:
             f"Her zaman dilimi için hesaplanan seviyeleri analizde kullan ve karşılaştırma yap. "
             f"Eğer ham veriler eksikse veya geçersizse (örn. High, Low veya Close 0.0 ise), bu durumu yorumda belirt ve en uygun alternatif zaman dilimini kullan.\n\n"
             f"### Ham Veriler\n"
-            f"{', '.join([f'{interval}: High=${raw_data[interval]['high']:.2f}, Low=${raw_data[interval]['low']:.2f}, Close=${raw_data[interval]['close']:.2f}' for interval in raw_data])}\n\n"
+            f"{', '.join(raw_data_formatted)}\n\n"
             f"### Diğer Veriler\n"
             f"- Mevcut Fiyat: {data['price']:.2f} USDT\n"
             f"- 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0):.2f}%\n"
