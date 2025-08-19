@@ -87,7 +87,7 @@ class KuCoinClient:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
 
-    async def fetch_kline_data(self, symbol, interval, count=30):
+    async def fetch_kline_data(self, symbol, interval, count=200):
         """KuCoin'den kline verisi çeker."""
         await self.initialize()
         try:
