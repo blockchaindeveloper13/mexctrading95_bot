@@ -534,7 +534,7 @@ class Storage:
             logger.error(f"SQLite error while cleaning old data: {e}")
 
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
-    """Teknik göstergeleri hesaplar, sadece uygun zaman dilimlerinde ve yeterli veriyle."""
+    """Teknik göstergeleri hesaplar, Ichimoku kaldırıldı, MA50/MA30 düzeltildi."""
     indicators = {}
     
     def safe_ema(series, period):
@@ -561,7 +561,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
                 f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
                 f'obv_{interval}': 0.0,
-                f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0},
                 f'raw_data_{interval}': {'high': 0.0, 'low': 0.0, 'close': 0.0}
             })
             continue
@@ -583,7 +582,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                     f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
                     f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
                     f'obv_{interval}': 0.0,
-                    f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0},
                     f'raw_data_{interval}': {'high': 0.0, 'low': 0.0, 'close': 0.0}
                 })
                 continue
@@ -603,12 +601,13 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
 
             # Hareketli Ortalamalar
             try:
-                if interval in ['1d', '1w'] and len(df) >= 50:
+                if len(df) >= 50:
                     sma_50 = ta.sma(df['close'], length=50, fillna=0.0)
                     logger.info(f"{symbol} için {interval} aralığında MA50 hesaplandı: {sma_50.iloc[-1]}")
                 elif len(df) >= 30:
                     logger.warning(f"{symbol} için {interval} aralığında MA50 için yetersiz veri ({len(df)} < 50), MA30 hesaplanıyor")
                     sma_50 = ta.sma(df['close'], length=30, fillna=0.0)
+                    logger.info(f"{symbol} için {interval} aralığında MA30 hesaplandı: {sma_50.iloc[-1]}")
                 else:
                     logger.warning(f"{symbol} için {interval} aralığında MA50/MA30 için yetersiz veri ({len(df)} < 30)")
                     sma_50 = pd.Series([0.0] * len(df))
@@ -619,6 +618,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 elif interval == '1w' and len(df) >= 100:
                     logger.warning(f"{symbol} için {interval} aralığında MA200 için yetersiz veri ({len(df)} < 200), MA100 hesaplanıyor")
                     sma_200 = ta.sma(df['close'], length=100, fillna=0.0)
+                    logger.info(f"{symbol} için {interval} aralığında MA100 hesaplandı: {sma_200.iloc[-1]}")
                 else:
                     logger.warning(f"{symbol} için {interval} aralığında MA200/MA100 için yetersiz veri ({len(df)} < 100)")
                     sma_200 = pd.Series([0.0] * len(df))
@@ -703,40 +703,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 obv = pd.Series([0.0] * len(df))
             indicators[f'obv_{interval}'] = float(obv.iloc[-1]) if not obv.empty and pd.notnull(obv.iloc[-1]) else 0.0
 
-            # Ichimoku Cloud
-            if interval in ['1d', '1w'] and len(df) >= 52:
-                try:
-                    ichimoku, _ = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=9, kijun=26, senkou=52)
-                    if ichimoku is not None and not ichimoku.empty:
-                        logger.info(f"{symbol} için {interval} aralığında Ichimoku hesaplandı: tenkan={ichimoku['ITS_9'].iloc[-1]}, kijun={ichimoku['ITK_26'].iloc[-1]}")
-                    indicators[f'ichimoku_{interval}'] = {
-                        'tenkan': float(ichimoku['ITS_9'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITS_9'].iloc[-1]) else 0.0,
-                        'kijun': float(ichimoku['ITK_26'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITK_26'].iloc[-1]) else 0.0,
-                        'senkou_a': float(ichimoku['ISA_9'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISA_9'].iloc[-1]) else 0.0,
-                        'senkou_b': float(ichimoku['ISB_26'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISB_26'].iloc[-1]) else 0.0
-                    }
-                except Exception as e:
-                    logger.error(f"{symbol} için {interval} aralığında Ichimoku hatası: {e}")
-                    indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
-            elif interval in ['1d', '1w'] and len(df) >= 30:
-                logger.warning(f"{symbol} için {interval} aralığında Ichimoku için yetersiz veri ({len(df)} < 52), kısa periyotlu Ichimoku hesaplanıyor")
-                try:
-                    ichimoku, _ = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=5, kijun=15, senkou=30)
-                    if ichimoku is not None and not ichimoku.empty:
-                        logger.info(f"{symbol} için {interval} aralığında kısa periyotlu Ichimoku hesaplandı: tenkan={ichimoku['ITS_5'].iloc[-1]}, kijun={ichimoku['ITK_15'].iloc[-1]}")
-                    indicators[f'ichimoku_{interval}'] = {
-                        'tenkan': float(ichimoku['ITS_5'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITS_5'].iloc[-1]) else 0.0,
-                        'kijun': float(ichimoku['ITK_15'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITK_15'].iloc[-1]) else 0.0,
-                        'senkou_a': float(ichimoku['ISA_5'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISA_5'].iloc[-1]) else 0.0,
-                        'senkou_b': float(ichimoku['ISB_15'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISB_15'].iloc[-1]) else 0.0
-                    }
-                except Exception as e:
-                    logger.error(f"{symbol} için {interval} aralığında kısa periyotlu Ichimoku hatası: {e}")
-                    indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
-            else:
-                logger.warning(f"{symbol} için {interval} aralığında Ichimoku için yetersiz veri ({len(df)} < 30)")
-                indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
-
         except Exception as e:
             logger.error(f"{symbol} için {interval} aralığında göstergeler hesaplanırken hata: {e}")
             indicators.update({
@@ -747,7 +713,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 f'bbands_{interval}': {'upper': 0.0, 'lower': 0.0},
                 f'stoch_{interval}': {'k': 0.0, 'd': 0.0},
                 f'obv_{interval}': 0.0,
-                f'ichimoku_{interval}': {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0},
                 f'raw_data_{interval}': {'high': 0.0, 'low': 0.0, 'close': 0.0}
             })
 
