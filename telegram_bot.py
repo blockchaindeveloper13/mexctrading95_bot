@@ -70,7 +70,7 @@ class KuCoinClient:
             if interval not in kucoin_intervals:
                 logger.error(f"Invalid interval {interval} for KuCoin")
                 return {'data': []}
-            symbol_kucoin = symbol.replace('USDT', '-USDT')  # KuCoin formatı: DOT-USDT
+            symbol_kucoin = symbol.replace('USDT', '-USDT')
             url = f"{self.base_url}/api/v1/market/candles?type={kucoin_intervals[interval]}&symbol={symbol_kucoin}"
             async with self.session.get(url) as response:
                 logger.info(f"Requesting KuCoin URL: {url}")
@@ -379,7 +379,7 @@ class Storage:
             logger.error(f"SQLite error while saving analysis for {symbol}: {e}")
 
     def save_conversation(self, chat_id, user_message, bot_response, symbol=None):
-        """Konuşma geçmişini kaydeder."""
+        """Konuşma geçmişini kaydeder ve son 100 mesajı tutar."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -393,6 +393,16 @@ class Storage:
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     symbol
                 ))
+                # Son 100 mesajı tutmak için fazla mesajları sil
+                cursor.execute("""
+                    DELETE FROM conversations
+                    WHERE id NOT IN (
+                        SELECT id FROM conversations
+                        WHERE chat_id = ?
+                        ORDER BY timestamp DESC
+                        LIMIT 100
+                    ) AND chat_id = ?
+                """, (chat_id, chat_id))
                 conn.commit()
         except sqlite3.Error as e:
             logger.error(f"SQLite error while saving conversation for chat_id {chat_id}: {e}")
@@ -428,8 +438,8 @@ class Storage:
             logger.error(f"SQLite error while fetching latest analysis for {symbol}: {e}")
             return None
 
-    def get_conversation_history(self, chat_id, limit=10):
-        """Sohbet geçmişini çeker."""
+    def get_conversation_history(self, chat_id, limit=100):
+        """Son 100 konuşma geçmişini çeker."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -464,15 +474,14 @@ class Storage:
             return None
 
     def clean_old_data(self, days=7):
-        """Eski verileri temizler."""
+        """Eski analizleri temizler (konuşmalar korunur)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
                 cursor.execute("DELETE FROM analyses WHERE timestamp < ?", (cutoff,))
-                cursor.execute("DELETE FROM conversations WHERE timestamp < ?", (cutoff,))
                 conn.commit()
-                logger.info("Old data cleaned from SQLite")
+                logger.info("Old analysis data cleaned from SQLite")
         except sqlite3.Error as e:
             logger.error(f"SQLite error while cleaning old data: {e}")
 
@@ -540,11 +549,11 @@ class TelegramBot:
         chat_id = update.effective_chat.id
         logger.info(f"Received message: {text}")
 
-        history = self.storage.get_conversation_history(chat_id, limit=3)
+        history = self.storage.get_conversation_history(chat_id, limit=100)
         context_info = f"Son konuşmalar: {history}"
 
         if "geçmiş" in text:
-            history = self.storage.get_conversation_history(chat_id, limit=10)
+            history = self.storage.get_conversation_history(chat_id, limit=100)
             if not history:
                 response = "📜 Kanka, henüz muhabbet geçmişimiz yok. Hadi başlayalım! 😎"
             else:
@@ -602,9 +611,7 @@ class TelegramBot:
 
         if matched_keyword == 'korelasyon' and symbol:
             current_analysis = self.storage.get_latest_analysis(symbol)
-            response = await self.deep
-
-seek.generate_natural_response(text, context_info, symbol)
+            response = await self.deepseek.generate_natural_response(text, context_info, symbol)
             if current_analysis:
                 btc_corr = re.search(r'🔗 BTC Korelasyonu: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
                 eth_corr = re.search(r'🔗 ETH Korelasyonu: (.*?)(?:\n|$)', current_analysis, re.DOTALL)
@@ -663,7 +670,6 @@ seek.generate_natural_response(text, context_info, symbol)
             await self.app.bot.send_message(chat_id=chat_id, text=message)
             self.storage.save_analysis(symbol, data)
             self.storage.save_conversation(chat_id, symbol, message, symbol)
-            self.storage.clean_old_data()
             return data
         except Exception as e:
             logger.error(f"Error processing coin {symbol}: {e}")
