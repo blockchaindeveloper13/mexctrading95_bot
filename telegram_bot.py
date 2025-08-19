@@ -57,7 +57,7 @@ def validate_data(df):
     if not invalid_rows.empty:
         logger.warning(f"Geçersiz veri (high < low): {invalid_rows[['timestamp', 'high', 'low']].to_dict()}")
         # High ve Low sütunlarını yer değiştir
-        df.loc[df['high'] < df['low'], ['high', 'low']] = df.loc[df['high'] < df['low'], ['low', 'high']].values
+        df.loc[df['high'] < df['low'], ['high', 'low']] = df.loc[df['high', 'low'], ['low', 'high']].values
         logger.info("High ve Low sütunları yer değiştirildi.")
 
     # Sıfır veya negatif fiyat kontrolü
@@ -87,7 +87,7 @@ class KuCoinClient:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
 
-    async def fetch_kline_data(self, symbol, interval, count=500):
+    async def fetch_kline_data(self, symbol, interval, count=200):
         """KuCoin'den kline verisi çeker."""
         await self.initialize()
         try:
@@ -255,22 +255,21 @@ class DeepSeekClient:
     async def analyze_coin(self, symbol, data):
         """Coin için long/short analizi yapar ve destek/direnç seviyelerini hesaplar."""
         fib_levels = data['indicators'].get('fibonacci_levels', [0.0, 0.0, 0.0, 0.0, 0.0])
-        ichimoku = data['indicators'].get('ichimoku_1d', {})
 
         raw_data = {}
         for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
             raw_data[interval] = data['indicators'].get(f'raw_data_{interval}', {'high': 0.0, 'low': 0.0, 'close': 0.0})
 
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik long ve short pozisyon parametrelerini sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Tüm veriler KuCoin’den alındı. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.
+        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Her zaman dilimi (5m, 15m, 60m, 6h, 12h, 1d, 1w) için ayrı ayrı long ve short pozisyon önerileri üret (her biri için giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini). ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik pozisyon parametrelerini sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve her zaman dilimi için analiz sürecini yorumda açıkla. Tüm veriler KuCoin’den alındı. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.
 
         ### Destek ve Direnç Hesaplama
-        Aşağıdaki ham verilere dayanarak her zaman dilimi için destek ve direnç seviyelerini hesapla:
+        Her zaman dilimi için destek ve direnç seviyelerini hesapla:
         - Pivot = (High + Low + Close) / 3
         - Range = High - Low
         - Destek Seviyeleri: [Pivot - Range * 0.5, Pivot - Range * 0.618, Pivot - Range]
         - Direnç Seviyeleri: [Pivot + Range * 0.5, Pivot + Range * 0.618, Pivot + Range]
-        En güvenilir zaman dilimi (örneğin, 1d veya 6h) için hesaplanan seviyeleri analizde kullan ve diğer zaman dilimlerini karşılaştırma için belirt. Eğer ham veriler eksikse veya geçersizse (örn. High, Low veya Close 0.0 ise), bu durumu yorumda belirt ve en uygun alternatif zaman dilimini kullan.
+        Her zaman dilimi için hesaplanan seviyeleri analizde kullan ve karşılaştırma yap. Eğer ham veriler eksikse veya geçersizse (örn. High, Low veya Close 0.0 ise), bu durumu yorumda belirt ve en uygun alternatif zaman dilimini kullan.
 
         ### Ham Veriler
         {', '.join([f"{interval}: High=${raw_data[interval]['high']:.2f}, Low=${raw_data[interval]['low']:.2f}, Close=${raw_data[interval]['close']:.2f}" for interval in raw_data])}
@@ -278,27 +277,26 @@ class DeepSeekClient:
         ### Diğer Veriler
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
-        - Kısa Vadeli Göstergeler (5m):
-          - MA: 50={data['indicators']['ma_5m']['ma50']:.2f}, 200={data['indicators']['ma_5m']['ma200']:.2f}
-          - RSI: {data['indicators']['rsi_5m']:.2f}
-          - ATR: %{data['indicators']['atr_5m']:.2f}
-          - MACD: {data['indicators']['macd_5m']['macd']:.2f}, Sinyal: {data['indicators']['macd_5m']['signal']:.2f}
-          - Bollinger: Üst={data['indicators']['bbands_5m']['upper']:.2f}, Alt={data['indicators']['bbands_5m']['lower']:.2f}
-          - Stochastic: %K={data['indicators']['stoch_5m']['k']:.2f}, %D={data['indicators']['stoch_5m']['d']:.2f}
-          - OBV: {data['indicators']['obv_5m']:.2f}
-        - Uzun Vadeli Göstergeler (1d):
-          - MA: 50={data['indicators']['ma_1d']['ma50']:.2f}, 200={data['indicators']['ma_1d']['ma200']:.2f}
-          - RSI: {data['indicators']['rsi_1d']:.2f}
-          - ATR: %{data['indicators']['atr_1d']:.2f}
-          - MACD: {data['indicators']['macd_1d']['macd']:.2f}, Sinyal: {data['indicators']['macd_1d']['signal']:.2f}
-          - Ichimoku: Tenkan={ichimoku.get('tenkan', 0.0):.2f}, Kijun={ichimoku.get('kijun', 0.0):.2f}, Bulut={ichimoku.get('senkou_a', 0.0):.2f}/{ichimoku.get('senkou_b', 0.0):.2f}
-        - Fibonacci Seviyeleri (1d): {', '.join([f'${x:.2f}' for x in fib_levels])}
+        - Göstergeler:
+        {''.join([f"""
+        - {interval} Göstergeleri:
+          - MA50: {data['indicators'][f'ma_{interval}']['ma50']:.2f}
+          - RSI: {data['indicators'][f'rsi_{interval}']:.2f}
+          - ATR: %{data['indicators'][f'atr_{interval}']:.2f}
+          - MACD: {data['indicators'][f'macd_{interval}']['macd']:.2f}, Sinyal: {data['indicators'][f'macd_{interval}']['signal']:.2f}
+          - Bollinger: Üst={data['indicators'][f'bbands_{interval}']['upper']:.2f}, Alt={data['indicators'][f'bbands_{interval}']['lower']:.2f}
+          - Stochastic: %K={data['indicators'][f'stoch_{interval}']['k']:.2f}, %D={data['indicators'][f'stoch_{interval}']['d']:.2f}
+          - OBV: {data['indicators'][f'obv_{interval}']:.2f}
+        """ for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']])}
+        - Fibonacci Seviyeleri: {', '.join([f'${x:.2f}' for x in fib_levels])}
         - BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f}
         - ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f}
 
         Çıktı formatı:
         📊 {symbol} Vadeli Analiz ({datetime.now().strftime('%Y-%m-%d %H:%M')})
         🔄 Zaman Dilimleri: 5m, 15m, 60m, 6h, 12h, 1d, 1w
+        {''.join([f"""
+        🌟 {interval} Analizi:
         📈 Long Pozisyon:
         - Giriş: $X
         - Take-Profit: $Y
@@ -315,18 +313,19 @@ class DeepSeekClient:
         - Trend: [Yükseliş/Düşüş/Nötr]
         📍 Destek: [Hesaplanan seviyeler]
         📍 Direnç: [Hesaplanan seviyeler]
+        """ for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']])}
         📍 Fibonacci: {', '.join([f'${x:.2f}' for x in fib_levels])}
         ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
         🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
         🔗 ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['eth_correlation'] > 0.8 else 'Normal'})
-        💬 Yorum: [Destek ve direnç seviyelerini nasıl hesapladığını, hangi zaman dilimini neden seçtiğini, seviyelerin güvenilirliğini ve diğer göstergelerle ilişkisini açıkla. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
+        💬 Yorum: [Her zaman dilimi için destek ve direnç seviyelerini nasıl hesapladığını, hangi göstergelere (MA50, RSI, MACD, Bollinger, Stochastic, OBV) dayandığını ve giriş/take-profit/stop-loss seçim gerekçesini açıkla. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
         """
         try:
             response = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=1000,
+                    max_tokens=1500,  # Daha uzun yanıt için max_tokens artırıldı
                     stream=False
                 ),
                 timeout=180.0
@@ -534,7 +533,7 @@ class Storage:
             logger.error(f"SQLite error while cleaning old data: {e}")
 
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
-    """Teknik göstergeleri hesaplar, Ichimoku kaldırıldı, MA50/MA30 düzeltildi."""
+    """Teknik göstergeleri hesaplar, Ichimoku ve MA200 kaldırıldı, sadece MA50 kullanılıyor."""
     indicators = {}
     
     def safe_ema(series, period):
@@ -554,7 +553,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
         if not kline or len(kline) < 2:
             logger.warning(f"{symbol} için {interval} aralığında veri yok veya yetersiz")
             indicators.update({
-                f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
+                f'ma_{interval}': {'ma50': 0.0},
                 f'rsi_{interval}': 50.0,
                 f'atr_{interval}': 0.0,
                 f'macd_{interval}': {'macd': 0.0, 'signal': 0.0},
@@ -575,7 +574,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             if df.empty:
                 logger.warning(f"{symbol} için {interval} aralığında geçerli veri yok")
                 indicators.update({
-                    f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
+                    f'ma_{interval}': {'ma50': 0.0},
                     f'rsi_{interval}': 50.0,
                     f'atr_{interval}': 0.0,
                     f'macd_{interval}': {'macd': 0.0, 'signal': 0.0},
@@ -599,7 +598,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 'close': float(last_row['close']) if pd.notnull(last_row['close']) else 0.0
             }
 
-            # Hareketli Ortalamalar
+            # Hareketli Ortalama (sadece MA50)
             try:
                 if len(df) >= 50:
                     sma_50 = ta.sma(df['close'], length=50, fillna=0.0)
@@ -611,25 +610,12 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 else:
                     logger.warning(f"{symbol} için {interval} aralığında MA50/MA30 için yetersiz veri ({len(df)} < 30)")
                     sma_50 = pd.Series([0.0] * len(df))
-                
-                if interval == '1w' and len(df) >= 200:
-                    sma_200 = ta.sma(df['close'], length=200, fillna=0.0)
-                    logger.info(f"{symbol} için {interval} aralığında MA200 hesaplandı: {sma_200.iloc[-1]}")
-                elif interval == '1w' and len(df) >= 100:
-                    logger.warning(f"{symbol} için {interval} aralığında MA200 için yetersiz veri ({len(df)} < 200), MA100 hesaplanıyor")
-                    sma_200 = ta.sma(df['close'], length=100, fillna=0.0)
-                    logger.info(f"{symbol} için {interval} aralığında MA100 hesaplandı: {sma_200.iloc[-1]}")
-                else:
-                    logger.warning(f"{symbol} için {interval} aralığında MA200/MA100 için yetersiz veri ({len(df)} < 100)")
-                    sma_200 = pd.Series([0.0] * len(df))
+                indicators[f'ma_{interval}'] = {
+                    'ma50': float(sma_50.iloc[-1]) if not sma_50.empty and pd.notnull(sma_50.iloc[-1]) else 0.0
+                }
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında SMA hatası: {e}")
-                sma_50 = pd.Series([0.0] * len(df))
-                sma_200 = pd.Series([0.0] * len(df))
-            indicators[f'ma_{interval}'] = {
-                'ma50': float(sma_50.iloc[-1]) if not sma_50.empty and pd.notnull(sma_50.iloc[-1]) else 0.0,
-                'ma200': float(sma_200.iloc[-1]) if not sma_200.empty and pd.notnull(sma_200.iloc[-1]) else 0.0
-            }
+                indicators[f'ma_{interval}'] = {'ma50': 0.0}
 
             # RSI
             try:
@@ -706,7 +692,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
         except Exception as e:
             logger.error(f"{symbol} için {interval} aralığında göstergeler hesaplanırken hata: {e}")
             indicators.update({
-                f'ma_{interval}': {'ma50': 0.0, 'ma200': 0.0},
+                f'ma_{interval}': {'ma50': 0.0},
                 f'rsi_{interval}': 50.0,
                 f'atr_{interval}': 0.0,
                 f'macd_{interval}': {'macd': 0.0, 'signal': 0.0},
@@ -812,6 +798,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
         indicators['eth_correlation'] = 0.0
 
     return indicators
+
 class TelegramBot:
     def __init__(self):
         self.group_id = int(os.getenv('TELEGRAM_GROUP_ID', '-1002869335730'))
