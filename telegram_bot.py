@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import pandas as pd
 import pandas_ta as ta
@@ -42,31 +41,29 @@ COINS = {
     "MKRUSDT": ["mkr", "mkrusdt", "maker"]
 }
 
+# Seçilen zaman dilimleri (1w kaldırıldı)
+TIMEFRAMES = ['5m', '15m', '60m', '6h', '12h', '1d']
+
 def validate_data(df):
     """Veride eksik veya geçersiz değerleri kontrol et ve düzelt."""
     if df.empty:
         logger.warning("Boş DataFrame, işlem atlanıyor.")
         return df
 
-    # Eksik verileri doldur
     if df[['open', 'high', 'low', 'close', 'volume']].isnull().any().any():
         logger.warning("Eksik veri tespit edildi, ileri ve geri doldurma yapılıyor.")
         df = df.fillna(method='ffill').fillna(method='bfill')
 
-    # High < Low kontrolü ve düzeltme
     invalid_rows = df[df['high'] < df['low']]
     if not invalid_rows.empty:
         logger.warning(f"Geçersiz veri (high < low): {invalid_rows[['timestamp', 'high', 'low']].to_dict()}")
-        # High ve Low sütunlarını yer değiştir
         df.loc[df['high'] < df['low'], ['high', 'low']] = df.loc[df['high', 'low'], ['low', 'high']].values
         logger.info("High ve Low sütunları yer değiştirildi.")
 
-    # Sıfır veya negatif fiyat kontrolü
     if (df[['open', 'high', 'low', 'close']] <= 0).any().any():
         logger.warning("Sıfır veya negatif fiyat tespit edildi, bu satırlar kaldırılıyor.")
         df = df[df[['open', 'high', 'low', 'close']].gt(0).all(axis=1)]
 
-    # Ekstra kontrol: High ve Low'un mantıklılığını doğrula
     df['max_price'] = df[['open', 'close', 'high', 'low']].max(axis=1)
     df['min_price'] = df[['open', 'close', 'high', 'low']].min(axis=1)
     df.loc[df['high'] != df['max_price'], 'high'] = df['max_price']
@@ -84,17 +81,15 @@ class KuCoinClient:
         self.session = None
 
     async def initialize(self):
-        """Session'ı başlatır."""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
 
     async def fetch_kline_data(self, symbol, interval, count=200):
-        """KuCoin'den kline verisi çeker."""
         await self.initialize()
         try:
             kucoin_intervals = {
                 '5m': '5min', '15m': '15min', '60m': '1hour', '6h': '6hour',
-                '12h': '12hour', '1d': '1day', '1w': '1week'
+                '12h': '12hour', '1d': '1day'
             }
             if interval not in kucoin_intervals:
                 logger.error(f"Geçersiz aralık {interval} KuCoin için")
@@ -107,15 +102,13 @@ class KuCoinClient:
                     response_data = await response.json()
                     logger.info(f"Raw KuCoin response: {response_data}")
                     if response_data['code'] == '200000' and response_data['data']:
-                        # API formatı: [timestamp, open, close, high, low, volume, turnover]
                         data = [
                             [int(candle[0]) * 1000, float(candle[1]), float(candle[2]), float(candle[3]),
                              float(candle[4]), float(candle[5]), int(candle[0]) * 1000, float(candle[6])]
                             for candle in response_data['data']
                         ][:count]
-                        # DataFrame'e doğru sütun sırasıyla atama
                         df = pd.DataFrame(data, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
-                        df = validate_data(df)  # Veriyi doğrula
+                        df = validate_data(df)
                         if df.empty:
                             logger.warning(f"Geçersiz veya boş veri sonrası DataFrame boş: {symbol} ({interval})")
                             return {'data': []}
@@ -134,7 +127,6 @@ class KuCoinClient:
             await asyncio.sleep(0.5)
 
     async def fetch_order_book(self, symbol):
-        """KuCoin'den order book verisi çeker."""
         await self.initialize()
         try:
             symbol_kucoin = symbol.replace('USDT', '-USDT')
@@ -164,7 +156,6 @@ class KuCoinClient:
             await asyncio.sleep(0.5)
 
     async def fetch_ticker(self, symbol):
-        """KuCoin'den ticker verisi çeker."""
         await self.initialize()
         try:
             symbol_kucoin = symbol.replace('USDT', '-USDT')
@@ -190,7 +181,6 @@ class KuCoinClient:
             await asyncio.sleep(0.5)
 
     async def fetch_24hr_ticker(self, symbol):
-        """KuCoin'den 24 saatlik ticker verisi çeker."""
         await self.initialize()
         try:
             symbol_kucoin = symbol.replace('USDT', '-USDT')
@@ -227,7 +217,6 @@ class KuCoinClient:
             await asyncio.sleep(0.5)
 
     async def validate_symbol(self, symbol):
-        """Sembolü KuCoin'de doğrular."""
         await self.initialize()
         try:
             symbol_kucoin = symbol.replace('USDT', '-USDT')
@@ -243,7 +232,6 @@ class KuCoinClient:
             await asyncio.sleep(0.5)
 
     async def close(self):
-        """Session'ı kapatır."""
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
@@ -254,16 +242,14 @@ class DeepSeekClient:
         self.client = AsyncOpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
 
     async def analyze_coin(self, symbol, data):
-        """Coin için long/short analizi yapar ve destek/direnç seviyelerini hesaplar."""
         fib_levels = data['indicators'].get('fibonacci_levels', [0.0, 0.0, 0.0, 0.0, 0.0])
 
         raw_data = {}
-        for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
+        for interval in TIMEFRAMES:
             raw_data[interval] = data['indicators'].get(f'raw_data_{interval}', {'high': 0.0, 'low': 0.0, 'close': 0.0})
 
-        # Göstergeleri önceden formatla
         indicators_formatted = []
-        for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
+        for interval in TIMEFRAMES:
             ma50 = data['indicators'][f'ma_{interval}']['ma50']
             rsi = data['indicators'][f'rsi_{interval}']
             atr = data['indicators'][f'atr_{interval}']
@@ -285,7 +271,6 @@ class DeepSeekClient:
                 f"  - OBV: {obv:.2f}\n"
             )
 
-        # Ham verileri önceden formatla
         raw_data_formatted = []
         for interval in raw_data:
             high = raw_data[interval]['high']
@@ -293,9 +278,8 @@ class DeepSeekClient:
             close = raw_data[interval]['close']
             raw_data_formatted.append(f"{interval}: High=${high:.2f}, Low=${low:.2f}, Close=${close:.2f}")
 
-        # Her zaman dilimi için analiz formatını ayrı ayrı oluştur
         timeframe_analyses = []
-        for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
+        for interval in TIMEFRAMES:
             timeframe_analyses.append(
                 f"=== {interval} Analizi ===\n"
                 f"Long Pozisyon:\n"
@@ -316,10 +300,24 @@ class DeepSeekClient:
                 f"Direnç: [Hesaplanan seviyeler]\n"
             )
 
+        summary_analysis = (
+            f"=== Toplu Değerlendirme ===\n"
+            f"Kısa Vadeli Öneriler (5m, 15m, 60m):\n"
+            f"- Long: Giriş $X1, Take-Profit $Y1, Stop-Loss $Z1\n"
+            f"- Short: Giriş $X2, Take-Profit $Y2, Stop-Loss $Z2\n"
+            f"Orta Vadeli Öneriler (6h, 12h):\n"
+            f"- Long: Giriş $X3, Take-Profit $Y3, Stop-Loss $Z3\n"
+            f"- Short: Giriş $X4, Take-Profit $Y4, Stop-Loss $Z4\n"
+            f"1 Günlük Maksimum Hedef:\n"
+            f"- Long: Maksimum $Y5\n"
+            f"- Short: Maksimum $Y6\n"
+        )
+
         prompt = (
             f"{symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. "
-            f"Her zaman dilimi (5m, 15m, 60m, 6h, 12h, 1d, 1w) için ayrı ayrı long ve short pozisyon önerileri üret "
+            f"Her zaman dilimi ({', '.join(TIMEFRAMES)}) için ayrı ayrı long ve short pozisyon önerileri üret "
             f"(her biri için giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini). "
+            f"Ek olarak, kısa vadeli (5m, 15m, 60m), orta vadeli (6h, 12h) ve 1 günlük maksimum hedefler için toplu öneriler sun. "
             f"ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik pozisyon parametrelerini sağla. "
             f"Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown ve emoji kullanma. "
             f"Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve her zaman dilimi için analiz sürecini yorumda açıkla. "
@@ -344,8 +342,9 @@ class DeepSeekClient:
             f"- ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f}\n\n"
             f"Çıktı formatı:\n"
             f"{symbol} Vadeli Analiz ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-            f"Zaman Dilimleri: 5m, 15m, 60m, 6h, 12h, 1d, 1w\n"
+            f"Zaman Dilimleri: {', '.join(TIMEFRAMES)}\n"
             f"{''.join(timeframe_analyses)}\n"
+            f"{summary_analysis}\n"
             f"Fibonacci: {', '.join([f'${x:.2f}' for x in fib_levels])}\n"
             f"Volatilite: {data['indicators']['atr_5m']:.2f}% ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})\n"
             f"BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})\n"
@@ -368,7 +367,7 @@ class DeepSeekClient:
             if len(analysis_text) < 500:
                 analysis_text += " " * (500 - len(analysis_text))
 
-            required_fields = ['Giriş', 'Take-Profit', 'Stop-Loss', 'Kaldıraç', 'Risk/Ödül', 'Trend', 'Yorum', 'Destek', 'Direnç']
+            required_fields = ['Giriş', 'Take-Profit', 'Stop-Loss', 'Kaldıraç', 'Risk/Ödül', 'Trend', 'Yorum', 'Destek', 'Direnç', 'Toplu Değerlendirme']
             missing_fields = []
             for field in required_fields:
                 if field == 'Yorum':
@@ -385,7 +384,6 @@ class DeepSeekClient:
             raise Exception(f"DeepSeek API'den veri alınamadı: {str(e)}")
 
     async def generate_natural_response(self, user_message, context_info, symbol=None):
-        """Doğal dil yanıtı üretir."""
         prompt = (
             f"Türkçe, ultra samimi ve esprili bir şekilde yanıt ver. Kullanıcıya 'kanka' diye hitap et, hafif argo kullan ama abartma. "
             f"Mesajına uygun, akıcı ve doğal bir muhabbet kur. Eğer sembol ({symbol}) varsa, bağlama uygun şekilde atıfta bulun ve BTC/ETH korelasyonlarını vurgula. "
@@ -412,13 +410,11 @@ class DeepSeekClient:
             return "Kanka, neyi kastediyosun, bi’ açar mısın? Hadi, muhabbet edelim!"
 
 class Storage:
-    """Analizleri ve konuşma geçmişini SQLite’ta depolar."""
     def __init__(self):
         self.db_path = "analysis.db"
         self.init_db()
 
     def init_db(self):
-        """SQLite veritabanını başlatır."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -443,7 +439,6 @@ class Storage:
             conn.commit()
 
     def save_analysis(self, symbol, data):
-        """Analizi kaydeder."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -461,7 +456,6 @@ class Storage:
             logger.error(f"SQLite error while saving analysis for {symbol}: {e}")
 
     def save_conversation(self, chat_id, user_message, bot_response, symbol=None):
-        """Konuşma geçmişini kaydeder ve son 100 mesajı tutar."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -489,7 +483,6 @@ class Storage:
             logger.error(f"SQLite error while saving conversation for chat_id {chat_id}: {e}")
 
     def get_previous_analysis(self, symbol):
-        """Sembol için en son analizi çeker."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -506,7 +499,6 @@ class Storage:
             return None
 
     def get_latest_analysis(self, symbol):
-        """Sembol için en son analizi çeker (sohbet için)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -520,7 +512,6 @@ class Storage:
             return None
 
     def get_conversation_history(self, chat_id, limit=100):
-        """Son 100 konuşma geçmişini çeker."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -538,7 +529,6 @@ class Storage:
             return []
 
     def get_last_symbol(self, chat_id):
-        """Son konuşmada kullanılan sembolü çeker."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -555,7 +545,6 @@ class Storage:
             return None
 
     def clean_old_data(self, days=7):
-        """Eski analizleri temizler (konuşmalar korunur)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -567,11 +556,9 @@ class Storage:
             logger.error(f"SQLite error while cleaning old data: {e}")
 
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
-    """Teknik göstergeleri hesaplar, Ichimoku ve MA200 kaldırıldı, sadece MA50 kullanılıyor."""
     indicators = {}
     
     def safe_ema(series, period):
-        """Kendi EMA hesaplayıcımız, NoneType hatalarını önler."""
         try:
             weights = np.exp(np.linspace(-1.0, 0.0, period))
             weights /= weights.sum()
@@ -582,7 +569,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             logger.error(f"{symbol} için EMA hatası: {e}")
             return pd.Series([0.0] * len(series), index=series.index)
 
-    for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
+    for interval in TIMEFRAMES:
         kline = kline_data.get(interval, {}).get('data', [])
         if not kline or len(kline) < 2:
             logger.warning(f"{symbol} için {interval} aralığında veri yok veya yetersiz")
@@ -602,7 +589,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             df = pd.DataFrame(kline, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
             logger.info(f"{symbol} için {interval} aralığında DataFrame: {df.head().to_dict()}")
             
-            # Verileri float'a çevir ve geçerliliği kontrol et
             df[['open', 'close', 'high', 'low', 'volume']] = df[['open', 'close', 'high', 'low', 'volume']].astype(float)
             df = df.dropna()
             if df.empty:
@@ -619,12 +605,10 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 })
                 continue
 
-            # High < low kontrolü
             if (df['high'] < df['low']).any():
                 logger.warning(f"{symbol} için {interval} aralığında hatalı veri: high < low")
                 df['high'], df['low'] = df[['high', 'low']].max(axis=1), df[['high', 'low']].min(axis=1)
 
-            # Ham verileri sakla
             last_row = df.iloc[-1]
             indicators[f'raw_data_{interval}'] = {
                 'high': float(last_row['high']) if pd.notnull(last_row['high']) else 0.0,
@@ -632,7 +616,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 'close': float(last_row['close']) if pd.notnull(last_row['close']) else 0.0
             }
 
-            # Hareketli Ortalama (sadece MA50)
             try:
                 if len(df) >= 50:
                     sma_50 = ta.sma(df['close'], length=50, fillna=0.0)
@@ -651,25 +634,22 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 logger.error(f"{symbol} için {interval} aralığında SMA hatası: {e}")
                 indicators[f'ma_{interval}'] = {'ma50': 0.0}
 
-            # RSI
             try:
                 rsi = ta.rsi(df['close'], length=14, fillna=50.0) if len(df) >= 14 else pd.Series([50.0] * len(df))
                 logger.info(f"{symbol} için {interval} aralığında RSI hesaplandı: {rsi.iloc[-1]}")
+                indicators[f'rsi_{interval}'] = float(rsi.iloc[-1]) if not rsi.empty and pd.notnull(rsi.iloc[-1]) else 50.0
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında RSI hatası: {e}")
-                rsi = pd.Series([50.0] * len(df))
-            indicators[f'rsi_{interval}'] = float(rsi.iloc[-1]) if not rsi.empty and pd.notnull(rsi.iloc[-1]) else 50.0
+                indicators[f'rsi_{interval}'] = 50.0
 
-            # ATR
             try:
                 atr = ta.atr(df['high'], df['low'], df['close'], length=14, fillna=0.0) if len(df) >= 14 else pd.Series([0.0] * len(df))
                 logger.info(f"{symbol} için {interval} aralığında ATR hesaplandı: {atr.iloc[-1]}")
+                indicators[f'atr_{interval}'] = (float(atr.iloc[-1]) / float(df['close'].iloc[-1]) * 100) if not atr.empty and pd.notnull(atr.iloc[-1]) and df['close'].iloc[-1] != 0 else 0.0
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında ATR hatası: {e}")
-                atr = pd.Series([0.0] * len(df))
-            indicators[f'atr_{interval}'] = (float(atr.iloc[-1]) / float(df['close'].iloc[-1]) * 100) if not atr.empty and pd.notnull(atr.iloc[-1]) and df['close'].iloc[-1] != 0 else 0.0
+                indicators[f'atr_{interval}'] = 0.0
 
-            # MACD
             try:
                 if len(df) >= 26:
                     ema_12 = safe_ema(df['close'], 12)
@@ -688,7 +668,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 logger.error(f"{symbol} için {interval} aralığında MACD hatası: {e}")
                 indicators[f'macd_{interval}'] = {'macd': 0.0, 'signal': 0.0}
 
-            # Bollinger Bantları
             try:
                 bbands = ta.bbands(df['close'], length=20, std=2, fillna=0.0) if len(df) >= 20 else None
                 if bbands is not None:
@@ -701,7 +680,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 logger.error(f"{symbol} için {interval} aralığında BBands hatası: {e}")
                 indicators[f'bbands_{interval}'] = {'upper': 0.0, 'lower': 0.0}
 
-            # Stochastic Oscillator
             try:
                 stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3, smooth_k=3, fillna=0.0) if len(df) >= 14 else None
                 if stoch is not None:
@@ -714,7 +692,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 logger.error(f"{symbol} için {interval} aralığında Stoch hatası: {e}")
                 indicators[f'stoch_{interval}'] = {'k': 0.0, 'd': 0.0}
 
-            # OBV
             try:
                 obv = ta.obv(df['close'], df['volume'], fillna=0.0) if len(df) >= 1 else pd.Series([0.0] * len(df))
                 logger.info(f"{symbol} için {interval} aralığında OBV hesaplandı: {obv.iloc[-1]}")
@@ -736,8 +713,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 f'raw_data_{interval}': {'high': 0.0, 'low': 0.0, 'close': 0.0}
             })
 
-    # Fibonacci Retracement
-    for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']:
+    for interval in TIMEFRAMES:
         kline = kline_data.get(interval, {}).get('data', [])
         if kline and len(kline) >= 30:
             df = pd.DataFrame(kline, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
@@ -767,7 +743,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             logger.warning(f"{symbol} için Fibonacci için yetersiz veri ({len(kline)} < 30)")
             indicators['fibonacci_levels'] = [0.0, 0.0, 0.0, 0.0, 0.0]
 
-    # Sipariş Defteri Oranı
     if order_book.get('bids') and order_book.get('asks'):
         try:
             bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
@@ -781,7 +756,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
         indicators['bid_ask_ratio'] = 0.0
         logger.warning(f"{symbol} için sipariş defterinde bid veya ask verisi yok")
 
-    # BTC Korelasyonu
     if btc_data.get('data') and len(btc_data['data']) > 1:
         try:
             btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
@@ -806,7 +780,6 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     else:
         indicators['btc_correlation'] = 0.0
 
-    # ETH Korelasyonu
     if eth_data.get('data') and len(eth_data['data']) > 1:
         try:
             eth_df = pd.DataFrame(eth_data['data'], columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'close_time', 'quote_volume'])
@@ -1007,7 +980,7 @@ class TelegramBot:
     async def process_coin(self, symbol, chat_id):
         try:
             data = await self.fetch_market_data(symbol)
-            if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in ['5m', '15m', '60m', '6h', '12h', '1d', '1w']):
+            if not data or not any(data.get('klines', {}).get(interval, {}).get('data') for interval in TIMEFRAMES):
                 response = f"Kanka, {symbol} için veri bulamadım. Başka coin mi bakalım?"
                 await self.app.bot.send_message(chat_id=chat_id, text=response)
                 self.storage.save_conversation(chat_id, symbol, response, symbol)
@@ -1031,12 +1004,10 @@ class TelegramBot:
             gc.collect()
 
     async def fetch_market_data(self, symbol):
-        """KuCoin'den tüm piyasa verilerini çeker."""
         await self.kucoin.initialize()
         try:
             klines = {}
-            intervals = ['5m', '15m', '60m', '6h', '12h', '1d', '1w']
-            for interval in intervals:
+            for interval in TIMEFRAMES:
                 klines[interval] = await self.kucoin.fetch_kline_data(symbol, interval)
                 await asyncio.sleep(0.5)
 
@@ -1050,7 +1021,7 @@ class TelegramBot:
                 'klines': klines,
                 'order_book': order_book,
                 'price': float(ticker.get('price', 0.0)),
-                'funding_rate': 0.0,  # Spot'ta yok
+                'funding_rate': 0.0,
                 'price_change_24hr': float(ticker_24hr.get('priceChangePercent', 0.0)),
                 'btc_data': btc_data,
                 'eth_data': eth_data
