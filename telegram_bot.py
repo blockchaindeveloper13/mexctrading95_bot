@@ -311,7 +311,7 @@ class DeepSeekClient:
         📊 {symbol} Vadeli Analiz ({datetime.now().strftime('%Y-%m-%d %H:%M')})
         🔄 Zaman Dilimleri: 5m, 15m, 60m, 6h, 12h, 1d, 1w
         {''.join([f"""
-        🌟 {interval} Analizi:
+        {interval} Analizi:
         📈 Long Pozisyon:
         - Giriş: $X
         - Take-Profit: $Y
