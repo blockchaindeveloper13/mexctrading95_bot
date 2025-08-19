@@ -601,17 +601,26 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 'close': float(last_row['close']) if pd.notnull(last_row['close']) else 0.0
             }
 
-            # Hareketli Ortalamalar (sadece uygun aralıklarda)
+            # Hareketli Ortalamalar
             try:
                 if interval in ['1d', '1w'] and len(df) >= 50:
                     sma_50 = ta.sma(df['close'], length=50, fillna=0.0)
+                    logger.info(f"{symbol} için {interval} aralığında MA50 hesaplandı: {sma_50.iloc[-1]}")
+                elif len(df) >= 30:
+                    logger.warning(f"{symbol} için {interval} aralığında MA50 için yetersiz veri ({len(df)} < 50), MA30 hesaplanıyor")
+                    sma_50 = ta.sma(df['close'], length=30, fillna=0.0)
                 else:
-                    logger.warning(f"{symbol} için {interval} aralığında MA50 için yetersiz veri ({len(df)} < 50)")
+                    logger.warning(f"{symbol} için {interval} aralığında MA50/MA30 için yetersiz veri ({len(df)} < 30)")
                     sma_50 = pd.Series([0.0] * len(df))
+                
                 if interval == '1w' and len(df) >= 200:
                     sma_200 = ta.sma(df['close'], length=200, fillna=0.0)
+                    logger.info(f"{symbol} için {interval} aralığında MA200 hesaplandı: {sma_200.iloc[-1]}")
+                elif interval == '1w' and len(df) >= 100:
+                    logger.warning(f"{symbol} için {interval} aralığında MA200 için yetersiz veri ({len(df)} < 200), MA100 hesaplanıyor")
+                    sma_200 = ta.sma(df['close'], length=100, fillna=0.0)
                 else:
-                    logger.warning(f"{symbol} için {interval} aralığında MA200 için yetersiz veri ({len(df)} < 200)")
+                    logger.warning(f"{symbol} için {interval} aralığında MA200/MA100 için yetersiz veri ({len(df)} < 100)")
                     sma_200 = pd.Series([0.0] * len(df))
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında SMA hatası: {e}")
@@ -625,6 +634,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             # RSI
             try:
                 rsi = ta.rsi(df['close'], length=14, fillna=50.0) if len(df) >= 14 else pd.Series([50.0] * len(df))
+                logger.info(f"{symbol} için {interval} aralığında RSI hesaplandı: {rsi.iloc[-1]}")
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında RSI hatası: {e}")
                 rsi = pd.Series([50.0] * len(df))
@@ -633,6 +643,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             # ATR
             try:
                 atr = ta.atr(df['high'], df['low'], df['close'], length=14, fillna=0.0) if len(df) >= 14 else pd.Series([0.0] * len(df))
+                logger.info(f"{symbol} için {interval} aralığında ATR hesaplandı: {atr.iloc[-1]}")
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında ATR hatası: {e}")
                 atr = pd.Series([0.0] * len(df))
@@ -649,6 +660,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                         'macd': float(macd_line.iloc[-1]) if pd.notnull(macd_line.iloc[-1]) else 0.0,
                         'signal': float(signal_line.iloc[-1]) if pd.notnull(signal_line.iloc[-1]) else 0.0
                     }
+                    logger.info(f"{symbol} için {interval} aralığında MACD hesaplandı: macd={macd_line.iloc[-1]}, signal={signal_line.iloc[-1]}")
                 else:
                     logger.warning(f"{symbol} için {interval} aralığında MACD için yetersiz veri ({len(df)} < 26)")
                     indicators[f'macd_{interval}'] = {'macd': 0.0, 'signal': 0.0}
@@ -659,6 +671,8 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             # Bollinger Bantları
             try:
                 bbands = ta.bbands(df['close'], length=20, std=2, fillna=0.0) if len(df) >= 20 else None
+                if bbands is not None:
+                    logger.info(f"{symbol} için {interval} aralığında BBands hesaplandı: upper={bbands['BBU_20_2.0'].iloc[-1]}, lower={bbands['BBL_20_2.0'].iloc[-1]}")
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında BBands hatası: {e}")
                 bbands = None
@@ -670,6 +684,8 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             # Stochastic Oscillator
             try:
                 stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3, smooth_k=3, fillna=0.0) if len(df) >= 14 else None
+                if stoch is not None:
+                    logger.info(f"{symbol} için {interval} aralığında Stoch hesaplandı: k={stoch['STOCHk_14_3_3'].iloc[-1]}, d={stoch['STOCHd_14_3_3'].iloc[-1]}")
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında Stoch hatası: {e}")
                 stoch = None
@@ -681,15 +697,18 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             # OBV
             try:
                 obv = ta.obv(df['close'], df['volume'], fillna=0.0) if len(df) >= 1 else pd.Series([0.0] * len(df))
+                logger.info(f"{symbol} için {interval} aralığında OBV hesaplandı: {obv.iloc[-1]}")
             except Exception as e:
                 logger.error(f"{symbol} için {interval} aralığında OBV hatası: {e}")
                 obv = pd.Series([0.0] * len(df))
             indicators[f'obv_{interval}'] = float(obv.iloc[-1]) if not obv.empty and pd.notnull(obv.iloc[-1]) else 0.0
 
-            # Ichimoku Cloud (sadece 1d ve 1w için, yeterli veri varsa)
+            # Ichimoku Cloud
             if interval in ['1d', '1w'] and len(df) >= 52:
                 try:
-                    ichimoku = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=9, kijun=26, senkou=52)[0]
+                    ichimoku, _ = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=9, kijun=26, senkou=52)
+                    if ichimoku is not None and not ichimoku.empty:
+                        logger.info(f"{symbol} için {interval} aralığında Ichimoku hesaplandı: tenkan={ichimoku['ITS_9'].iloc[-1]}, kijun={ichimoku['ITK_26'].iloc[-1]}")
                     indicators[f'ichimoku_{interval}'] = {
                         'tenkan': float(ichimoku['ITS_9'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITS_9'].iloc[-1]) else 0.0,
                         'kijun': float(ichimoku['ITK_26'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITK_26'].iloc[-1]) else 0.0,
@@ -699,8 +718,23 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 except Exception as e:
                     logger.error(f"{symbol} için {interval} aralığında Ichimoku hatası: {e}")
                     indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
+            elif interval in ['1d', '1w'] and len(df) >= 30:
+                logger.warning(f"{symbol} için {interval} aralığında Ichimoku için yetersiz veri ({len(df)} < 52), kısa periyotlu Ichimoku hesaplanıyor")
+                try:
+                    ichimoku, _ = ta.ichimoku(df['high'], df['low'], df['close'], tenkan=5, kijun=15, senkou=30)
+                    if ichimoku is not None and not ichimoku.empty:
+                        logger.info(f"{symbol} için {interval} aralığında kısa periyotlu Ichimoku hesaplandı: tenkan={ichimoku['ITS_5'].iloc[-1]}, kijun={ichimoku['ITK_15'].iloc[-1]}")
+                    indicators[f'ichimoku_{interval}'] = {
+                        'tenkan': float(ichimoku['ITS_5'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITS_5'].iloc[-1]) else 0.0,
+                        'kijun': float(ichimoku['ITK_15'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ITK_15'].iloc[-1]) else 0.0,
+                        'senkou_a': float(ichimoku['ISA_5'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISA_5'].iloc[-1]) else 0.0,
+                        'senkou_b': float(ichimoku['ISB_15'].iloc[-1]) if ichimoku is not None and not ichimoku.empty and pd.notnull(ichimoku['ISB_15'].iloc[-1]) else 0.0
+                    }
+                except Exception as e:
+                    logger.error(f"{symbol} için {interval} aralığında kısa periyotlu Ichimoku hatası: {e}")
+                    indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
             else:
-                logger.warning(f"{symbol} için {interval} aralığında Ichimoku için yetersiz veri ({len(df)} < 52)")
+                logger.warning(f"{symbol} için {interval} aralığında Ichimoku için yetersiz veri ({len(df)} < 30)")
                 indicators[f'ichimoku_{interval}'] = {'tenkan': 0.0, 'kijun': 0.0, 'senkou_a': 0.0, 'senkou_b': 0.0}
 
         except Exception as e:
@@ -737,6 +771,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                             float(low + diff * 0.618),
                             float(low + diff * 0.786)
                         ]
+                        logger.info(f"{symbol} için {interval} aralığında Fibonacci seviyeleri hesaplandı: {indicators['fibonacci_levels']}")
                     else:
                         indicators['fibonacci_levels'] = [0.0, 0.0, 0.0, 0.0, 0.0]
                 except Exception as e:
@@ -753,6 +788,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
             bid_volume = sum(float(bid[1]) for bid in order_book['bids'])
             ask_volume = sum(float(ask[1]) for ask in order_book['asks'])
             indicators['bid_ask_ratio'] = bid_volume / ask_volume if ask_volume > 0 else 0.0
+            logger.info(f"{symbol} için sipariş defteri oranı hesaplandı: {indicators['bid_ask_ratio']}")
         except Exception as e:
             logger.error(f"{symbol} için sipariş defteri oranı hatası: {e}")
             indicators['bid_ask_ratio'] = 0.0
@@ -773,6 +809,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 if len(coin_df) == len(btc_df):
                     correlation = coin_df['close'].corr(btc_df['close'])
                     indicators['btc_correlation'] = float(correlation) if not np.isnan(correlation) else 0.0
+                    logger.info(f"{symbol} için BTC korelasyonu hesaplandı: {indicators['btc_correlation']}")
                 else:
                     logger.warning(f"{symbol} için BTC korelasyonu: Veri uzunlukları uyuşmuyor ({len(coin_df)} vs {len(btc_df)})")
                     indicators['btc_correlation'] = 0.0
@@ -797,6 +834,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 if len(coin_df) == len(eth_df):
                     correlation = coin_df['close'].corr(eth_df['close'])
                     indicators['eth_correlation'] = float(correlation) if not np.isnan(correlation) else 0.0
+                    logger.info(f"{symbol} için ETH korelasyonu hesaplandı: {indicators['eth_correlation']}")
                 else:
                     logger.warning(f"{symbol} için ETH korelasyonu: Veri uzunlukları uyuşmuyor ({len(coin_df)} vs {len(eth_df)})")
                     indicators['eth_correlation'] = 0.0
