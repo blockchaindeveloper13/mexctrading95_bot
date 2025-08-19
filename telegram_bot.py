@@ -41,7 +41,7 @@ COINS = {
     "MKRUSDT": ["mkr", "mkrusdt", "maker"]
 }
 
-# Seçilen zaman dilimleri (12h ve 1d kaldırıldı)
+# Seçilen zaman dilimleri
 TIMEFRAMES = ['5m', '15m', '60m', '6h']
 
 def validate_data(df):
@@ -280,21 +280,21 @@ class DeepSeekClient:
             raw_data_formatted.append(f"{interval}: High=${high:.2f}, Low=${low:.2f}, Close=${close:.2f}")
 
         prompt = (
-            f"{symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, detaylı ve özgürce yazılmış olmalı. 😎 "
+            f"{symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, detaylı ama kısa (maks 3000 karakter) olmalı. 😎 "
             f"Sadece tek bir long ve short pozisyon önerisi sun (giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini). "
             f"Değerler tamamen senin analizine dayansın, kodda hesaplama yapılmasın. 🧠 "
-            f"Toplu değerlendirme (yorum) detaylı olsun, emoji kullan, karakter sınırlaması olmadan özgürce anlat. 🎉 "
+            f"Toplu değerlendirme (yorum) detaylı, emoji dolu ve samimi olsun, ama özlü yaz (maks 1500 karakter). 🎉 "
             f"ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik pozisyon parametrelerini sağla. ⚠️ "
             f"Spot verilerini vadeli işlem için uyarla. Doğal, profesyonel ama samimi bir üslup kullan. 😄 "
-            f"Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere (MA50, RSI, MACD, Bollinger, Stochastic, OBV) dayandığını detaylıca açıkla. "
-            f"Tüm veriler KuCoin’den alındı. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt. 📊\n\n"
+            f"Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere (MA50, RSI, MACD, Bollinger, Stochastic, OBV) dayandığını kısaca açıkla. "
+            f"Tüm veriler KuCoin’den alındı. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve belirt. 📊\n\n"
             f"### Destek ve Direnç Hesaplama\n"
             f"Destek ve direnç seviyelerini pivot nokta yöntemiyle hesapla:\n"
             f"- Pivot = (High + Low + Close) / 3\n"
             f"- Range = High - Low\n"
             f"- Destek Seviyeleri: [Pivot - Range * 0.5, Pivot - Range * 0.618, Pivot - Range]\n"
             f"- Direnç Seviyeleri: [Pivot + Range * 0.5, Pivot + Range * 0.618, Pivot + Range]\n"
-            f"Seviyeleri analizde kullan ve karşılaştırma yap. Eğer ham veriler eksikse, durumu yorumda belirt ve en uygun alternatif zaman dilimini kullan. 🔍\n\n"
+            f"Seviyeleri analizde kullan ve karşılaştırma yap. Eğer ham veriler eksikse, durumu yorumda belirt. 🔍\n\n"
             f"### Ham Veriler\n"
             f"{', '.join(raw_data_formatted)}\n\n"
             f"### Diğer Veriler\n"
@@ -328,14 +328,14 @@ class DeepSeekClient:
             f"Volatilite: {data['indicators']['atr_5m']:.2f}% ({'Yüksek, uzak dur! 😱' if data['indicators']['atr_5m'] > 5 else 'Normal 😎'}) ⚡\n"
             f"BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat! ⚠️' if data['indicators']['btc_correlation'] > 0.8 else 'Normal 😎'}) 🤝\n"
             f"ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat! ⚠️' if data['indicators']['eth_correlation'] > 0.8 else 'Normal 😎'}) 🤝\n"
-            f"Yorum: [Detaylıca açıkla, hangi göstergelere dayandığını, giriş/take-profit/stop-loss seçim gerekçesini, yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı belirt, emoji kullan, özgürce yaz! 🎉]\n"
+            f"Yorum: [Kısa, öz ama detaylı açıkla, hangi göstergelere dayandığını, giriş/take-profit/stop-loss seçim gerekçesini, yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı belirt, emoji kullan, samimi ol! 🎉 Maks 1500 karakter.]\n"
         )
         try:
             response = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=4000,  # Karakter sınırlaması kaldırıldı
+                    max_tokens=3000,  # Toplam mesaj uzunluğu için sınır
                     stream=False
                 ),
                 timeout=180.0
@@ -361,7 +361,7 @@ class DeepSeekClient:
         prompt = (
             f"Türkçe, ultra samimi ve esprili bir şekilde yanıt ver. Kullanıcıya 'kanka' diye hitap et, hafif argo kullan ama abartma. 😎 "
             f"Mesajına uygun, akıcı ve doğal bir muhabbet kur. Eğer sembol ({symbol}) varsa, bağlama uygun şekilde atıfta bulun ve BTC/ETH korelasyonlarını vurgula. 🤝 "
-            f"Konuşma geçmişini ve son analizi dikkate al. Emoji kullan, özgürce yaz! 🎉\n\n"
+            f"Konuşma geçmişini ve son analizi dikkate al. Emoji kullan, özgürce yaz! 🎉 Yanıt maks 1500 karakter olsun.\n\n"
             f"Kullanıcı mesajı: {user_message}\n"
             f"Bağlam: {context_info}\n"
         )
@@ -958,6 +958,34 @@ class TelegramBot:
         await update.message.reply_text(response)
         self.storage.save_conversation(chat_id, text, response, symbol)
 
+    async def split_and_send_message(self, chat_id, message, symbol):
+        """Mesajı 4096 karakter sınırına göre böl ve sırayla gönder."""
+        max_length = 4096
+        if len(message) <= max_length:
+            await self.app.bot.send_message(chat_id=chat_id, text=message)
+            self.storage.save_conversation(chat_id, symbol, message, symbol)
+            return
+
+        # Mesajı mantıklı bölümlere ayır
+        sections = []
+        current_section = ""
+        lines = message.split('\n')
+        for line in lines:
+            if len(current_section) + len(line) + 1 > max_length:
+                sections.append(current_section.strip())
+                current_section = line + '\n'
+            else:
+                current_section += line + '\n'
+        if current_section:
+            sections.append(current_section.strip())
+
+        # Bölümleri sırayla gönder
+        for i, section in enumerate(sections, 1):
+            part_message = f"**{symbol} Analiz - Bölüm {i}/{len(sections)}** ⏰\n{section}"
+            await self.app.bot.send_message(chat_id=chat_id, text=part_message)
+            self.storage.save_conversation(chat_id, symbol, part_message, symbol)
+            await asyncio.sleep(0.5)  # Telegram rate limit için kısa bekleme
+
     async def process_coin(self, symbol, chat_id):
         try:
             data = await self.fetch_market_data(symbol)
@@ -969,9 +997,8 @@ class TelegramBot:
             data['indicators'] = calculate_indicators(data['klines'], data['order_book'], data['btc_data'], data['eth_data'], symbol)
             data['deepseek_analysis'] = await self.deepseek.analyze_coin(symbol, data)
             message = data['deepseek_analysis']['analysis_text']
-            await self.app.bot.send_message(chat_id=chat_id, text=message)
+            await self.split_and_send_message(chat_id, message, symbol)
             self.storage.save_analysis(symbol, data)
-            self.storage.save_conversation(chat_id, symbol, message, symbol)
             return data
         except Exception as e:
             logger.error(f"Error processing coin {symbol}: {e} 😞")
