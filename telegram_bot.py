@@ -41,44 +41,46 @@ COINS = {
     "MKRUSDT": ["mkr", "mkrusdt", "maker"]
 }
 
-class CoinMarketCapClient:
-    """CoinMarketCap API ile iletişim kurar."""
+class KuCoinClient:
+    """KuCoin API ile iletişim kurar."""
     def __init__(self):
-        self.base_url = "https://pro-api.coinmarketcap.com"
-        self.api_key = os.getenv('COINMARKETCAP_API_KEY')
+        self.base_url = "https://api.kucoin.com"
+        self.api_key = os.getenv('KUCOIN_KEY')
+        self.api_secret = os.getenv('KUCOIN_SECRET')
         self.session = None
 
     async def initialize(self):
         """Session’ı başlatır."""
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(headers={'X-CMC_PRO_API_KEY': self.api_key})
+            self.session = aiohttp.ClientSession()
 
-    async def fetch_kline_data(self, symbol, interval, count=50):
-        """CoinMarketCap’ten kline verisi çeker."""
+    async def fetch_kline_data(self, symbol, interval, count=30):
+        """KuCoin’den kline verisi çeker."""
         await self.initialize()
         try:
-            cmc_intervals = {'6h': '6h', '12h': '12h', '1w': 'weekly'}
-            if interval not in cmc_intervals:
+            kucoin_intervals = {'6h': '6hour', '12h': '12hour', '1w': '1week'}
+            if interval not in kucoin_intervals:
                 return {'data': []}
-            url = f"{self.base_url}/v2/cryptocurrency/ohlcv/historical?symbol={symbol[:-4]}&interval={cmc_intervals[interval]}&count={count}"
+            symbol_kucoin = symbol.replace('USDT', '-USDT')  # KuCoin formatı: ADA-USDT
+            url = f"{self.base_url}/api/v1/market/candles?type={kucoin_intervals[interval]}&symbol={symbol_kucoin}"
             async with self.session.get(url) as response:
                 if response.status == 200:
                     response_data = await response.json()
-                    if response_data['data'].get(symbol[:-4]):
+                    if response_data['code'] == '200000' and response_data['data']:
                         data = [
-                            [quote['timestamp'], quote['open'], quote['high'], quote['low'], quote['close'], quote['volume'], quote['timestamp'], quote['quote_volume']]
-                            for quote in response_data['data'][symbol[:-4]][0]['quotes']
-                        ]
-                        logger.info(f"CoinMarketCap kline response for {symbol} ({interval}): {data[:1]}...")
+                            [int(candle[0]) * 1000, float(candle[1]), float(candle[3]), float(candle[4]), float(candle[2]), float(candle[5]), int(candle[0]) * 1000, float(candle[6])]
+                            for candle in response_data['data']
+                        ][:count]
+                        logger.info(f"KuCoin kline response for {symbol} ({interval}): {data[:1]}...")
                         return {'data': data}
                     else:
-                        logger.warning(f"No CoinMarketCap kline data for {symbol} ({interval})")
+                        logger.warning(f"No KuCoin kline data for {symbol} ({interval})")
                         return {'data': []}
                 else:
-                    logger.error(f"Failed to fetch CoinMarketCap kline data for {symbol} ({interval}): {response.status}")
+                    logger.error(f"Failed to fetch KuCoin kline data for {symbol} ({interval}): {response.status}")
                     return {'data': []}
         except Exception as e:
-            logger.error(f"Error fetching CoinMarketCap kline data for {symbol} ({interval}): {e}")
+            logger.error(f"Error fetching KuCoin kline data for {symbol} ({interval}): {e}")
             return {'data': []}
         finally:
             await asyncio.sleep(0.5)
@@ -94,13 +96,13 @@ class MEXCClient:
     def __init__(self):
         self.spot_url = "https://api.mexc.com"
         self.session = None
-        self.cmc_client = CoinMarketCapClient()
+        self.kucoin_client = KuCoinClient()
 
     async def initialize(self):
         """Session’ı başlatır."""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
-        await self.cmc_client.initialize()
+        await self.kucoin_client.initialize()
 
     async def fetch_market_data(self, symbol):
         """Spot piyasası verisi çeker."""
@@ -109,13 +111,13 @@ class MEXCClient:
             klines = {}
             mexc_intervals = ['5m', '15m', '60m', '1d']
             for interval in mexc_intervals:
-                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=50"
+                url = f"{self.spot_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=30"
                 async with self.session.get(url) as response:
                     if response.status == 200:
                         response_data = await response.json()
                         if response_data and isinstance(response_data, list) and len(response_data) > 0:
-                            klines[interval] = {'data': response_data}
-                            logger.info(f"Kline response for {symbol} ({interval}): {response_data[:1]}...")
+                            klines[interval] = {'data': [[float(candle[i]) if i in [1, 2, 3, 4, 5, 7] else candle[i] for i in range(len(candle))] for candle in response_data]}
+                            logger.info(f"Kline response for {symbol} ({interval}): {klines[interval]['data'][:1]}...")
                         else:
                             logger.warning(f"No valid kline data for {symbol} ({interval})")
                             klines[interval] = {'data': []}
@@ -124,10 +126,10 @@ class MEXCClient:
                         klines[interval] = {'data': []}
                     await asyncio.sleep(0.5)
 
-            # CoinMarketCap’ten 6h, 12h, 1w verilerini çek
-            cmc_intervals = ['6h', '12h', '1w']
-            for interval in cmc_intervals:
-                klines[interval] = await self.cmc_client.fetch_kline_data(symbol, interval)
+            # KuCoin’den 6h, 12h, 1w verilerini çek
+            kucoin_intervals = ['6h', '12h', '1w']
+            for interval in kucoin_intervals:
+                klines[interval] = await self.kucoin_client.fetch_kline_data(symbol, interval)
 
             order_book_url = f"{self.spot_url}/api/v3/depth?symbol={symbol}&limit=10"
             async with self.session.get(order_book_url) as response:
@@ -153,7 +155,7 @@ class MEXCClient:
                 'klines': klines,
                 'order_book': order_book,
                 'price': float(ticker.get('price', 0.0)),
-                'funding_rate': 0.0,  # Spot'ta fonlama oranı yok
+                'funding_rate': 0.0,  # Spot’ta yok
                 'price_change_24hr': float(ticker_24hr.get('priceChangePercent', 0.0)),
                 'btc_data': btc_data,
                 'eth_data': eth_data
@@ -168,9 +170,11 @@ class MEXCClient:
         """BTC/USDT spot verilerini çeker."""
         await self.initialize()
         async with self.session:
-            url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=50"
+            url = f"{self.spot_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=30"
             async with self.session.get(url) as response:
                 response_data = await response.json() if response.status == 200 else []
+                if response_data:
+                    response_data = [[float(candle[i]) if i in [1, 2, 3, 4, 5, 7] else candle[i] for i in range(len(candle))] for candle in response_data]
                 logger.info(f"BTC data response: {response_data[:1]}...")
                 return {'data': response_data}
 
@@ -178,9 +182,11 @@ class MEXCClient:
         """ETH/USDT spot verilerini çeker."""
         await self.initialize()
         async with self.session:
-            url = f"{self.spot_url}/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=50"
+            url = f"{self.spot_url}/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=30"
             async with self.session.get(url) as response:
                 response_data = await response.json() if response.status == 200 else []
+                if response_data:
+                    response_data = [[float(candle[i]) if i in [1, 2, 3, 4, 5, 7] else candle[i] for i in range(len(candle))] for candle in response_data]
                 logger.info(f"ETH data response: {response_data[:1]}...")
                 return {'data': response_data}
 
@@ -199,7 +205,7 @@ class MEXCClient:
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
-        await self.cmc_client.close()
+        await self.kucoin_client.close()
 
 class DeepSeekClient:
     """DeepSeek API ile analiz yapar ve doğal dil işleme sağlar."""
@@ -213,7 +219,7 @@ class DeepSeekClient:
         fib_levels = data['indicators'].get('fibonacci_levels', [0.0, 0.0, 0.0, 0.0, 0.0])
         ichimoku = data['indicators'].get('ichimoku_1d', {})
         prompt = f"""
-        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik long ve short pozisyon parametrelerini sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Kısa vadeli (5m, 15m, 60m) ve uzun vadeli (6h, 12h, 1d, 1w) trendleri ayrı ayrı değerlendir. Uzun vadeli veriler CoinMarketCap’ten alındı, eksiklikleri belirt. Her alan için tam bir sayı veya metin zorunlu.
+        {symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, 500-1000 karakter. Verilere dayanarak giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini üret. ATR > %5 veya BTC/ETH korelasyonu > 0.8 ise yatırımdan uzak dur uyarısı ekle, ancak teorik long ve short pozisyon parametrelerini sağla. Spot verilerini vadeli işlem için uyarla. Doğal ve profesyonel üslup kullan. Markdown (** vb.) kullanma, sadece emoji kullan. Giriş, take-profit ve stop-loss’u nasıl belirlediğini, hangi göstergelere dayandığını ve analiz sürecini yorumda açıkla. Kısa vadeli (5m, 15m, 60m) MEXC’ten, uzun vadeli (6h, 12h, 1w) KuCoin’den alındı. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.
 
         - Mevcut Fiyat: {data['price']} USDT
         - 24 Saatlik Değişim: {data.get('price_change_24hr', 0.0)}%
@@ -260,7 +266,7 @@ class DeepSeekClient:
         ⚠️ Volatilite: %{data['indicators']['atr_5m']:.2f} ({'Yüksek, uzak dur!' if data['indicators']['atr_5m'] > 5 else 'Normal'})
         🔗 BTC Korelasyonu: {data['indicators']['btc_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['btc_correlation'] > 0.8 else 'Normal'})
         🔗 ETH Korelasyonu: {data['indicators']['eth_correlation']:.2f} ({'Yüksek, dikkat!' if data['indicators']['eth_correlation'] > 0.8 else 'Normal'})
-        💬 Yorum: [Kısa vadeli (5m, 15m, 60m) MEXC’ten, uzun vadeli (6h, 12h, 1w) CoinMarketCap’ten alındı. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
+        💬 Yorum: [Kısa vadeli (5m, 15m, 60m) MEXC’ten, uzun vadeli (6h, 12h, 1w) KuCoin’den alındı. MACD, Bollinger, Stochastic, OBV ve Ichimoku’ya dayalı giriş/take-profit/stop-loss seçim gerekçesi. Yüksek korelasyon veya volatilite varsa neden yatırımdan uzak durulmalı açıkla. Uzun vadeli veri eksikse, kısa vadeli verilere odaklan ve eksikliği belirt.]
         """
         try:
             response = await asyncio.wait_for(
@@ -458,10 +464,9 @@ class Storage:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM analyses WHERE timestamp < ?", 
-                              (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S'))
-                cursor.execute("DELETE FROM conversations WHERE timestamp < ?", 
-                              (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S'))
+                cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute("DELETE FROM analyses WHERE timestamp < ?", (cutoff,))
+                cursor.execute("DELETE FROM conversations WHERE timestamp < ?", (cutoff,))
                 conn.commit()
                 logger.info("Old data cleaned from SQLite")
         except sqlite3.Error as e:
@@ -731,11 +736,9 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
         if kline and len(kline) > 1:
             fallback_interval = interval
             try:
+                # Sadece gerekli sütunları kullan
                 df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-                df['close'] = df['close'].astype(float)
-                df['high'] = df['high'].astype(float)
-                df['low'] = df['low'].astype(float)
-                df['volume'] = df['volume'].astype(float)
+                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
 
                 # Hareketli Ortalamalar
                 sma_50 = ta.sma(df['close'], length=50) if len(df) >= 50 else None
@@ -794,9 +797,9 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 ]
 
                 # Fibonacci Retracement
-                if len(df) >= 50:
-                    high = df['high'].tail(50).max()
-                    low = df['low'].tail(50).min()
+                if len(df) >= 30:
+                    high = df['high'].tail(30).max()
+                    low = df['low'].tail(30).min()
                     diff = high - low
                     indicators['fibonacci_levels'] = [
                         low + diff * 0.236,
@@ -823,9 +826,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                         # 60m’den Ichimoku türet
                         if '60m' in kline_data and kline_data['60m'].get('data'):
                             df_60m = pd.DataFrame(kline_data['60m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-                            df_60m['close'] = df_60m['close'].astype(float)
-                            df_60m['high'] = df_60m['high'].astype(float)
-                            df_60m['low'] = df_60m['low'].astype(float)
+                            df_60m = df_60m[['timestamp', 'open', 'high', 'low', 'close', 'volume']].astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
                             if len(df_60m) >= 52:
                                 try:
                                     ichimoku = ta.ichimoku(df_60m['high'], df_60m['low'], df_60m['close'], tenkan=9, kijun=26, senkou=52)[0]
@@ -881,9 +882,7 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
         kline = kline_data.get(fallback_interval, {}).get('data', [])
         if kline and len(kline) > 1:
             df = pd.DataFrame(kline, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-            df['close'] = df['close'].astype(float)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
+            df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
             last_row = df.iloc[-1]
             pivot = (last_row['high'] + last_row['low'] + last_row['close']) / 3
             range_high_low = last_row['high'] - last_row['low']
@@ -897,9 +896,9 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
                 pivot + range_high_low * 0.618,
                 pivot + range_high_low
             ]
-            if len(df) >= 50:
-                high = df['high'].tail(50).max()
-                low = df['low'].tail(50).min()
+            if len(df) >= 30:
+                high = df['high'].tail(30).max()
+                low = df['low'].tail(30).min()
                 diff = high - low
                 indicators['fibonacci_levels'] = [
                     low + diff * 0.236,
@@ -920,10 +919,10 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     # BTC korelasyonu
     if btc_data.get('data') and len(btc_data['data']) > 1:
         btc_df = pd.DataFrame(btc_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-        btc_df['close'] = btc_df['close'].astype(float)
+        btc_df = btc_df[['close']].astype({'close': float})
         if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
             coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-            coin_df['close'] = coin_df['close'].astype(float)
+            coin_df = coin_df[['close']].astype({'close': float})
             correlation = coin_df['close'].corr(btc_df['close'])
             indicators['btc_correlation'] = correlation if not np.isnan(correlation) else 0.0
         else:
@@ -934,10 +933,10 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     # ETH korelasyonu
     if eth_data.get('data') and len(eth_data['data']) > 1:
         eth_df = pd.DataFrame(eth_data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-        eth_df['close'] = eth_df['close'].astype(float)
+        eth_df = eth_df[['close']].astype({'close': float})
         if kline_data.get('5m', {}).get('data') and len(kline_data['5m']['data']) > 1:
             coin_df = pd.DataFrame(kline_data['5m']['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume'])
-            coin_df['close'] = coin_df['close'].astype(float)
+            coin_df = coin_df[['close']].astype({'close': float})
             correlation = coin_df['close'].corr(eth_df['close'])
             indicators['eth_correlation'] = correlation if not np.isnan(correlation) else 0.0
         else:
