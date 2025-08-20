@@ -11,10 +11,11 @@ from openai import AsyncOpenAI
 from aiohttp import web
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
-import sqlite3
+import psycopg2
+from urllib.parse import urlparse
+import json
 import re
 import numpy as np
-import json
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -387,59 +388,72 @@ class DeepSeekClient:
 
 class Storage:
     def __init__(self):
-        self.db_path = "analysis.db"
+        url = urlparse(os.environ["DATABASE_URL"])
+        self.conn = psycopg2.connect(
+            database=url.path[1:],
+            user=url.username,
+            password=url.password,
+            host=url.hostname,
+            port=url.port
+        )
         self.init_db()
+        logger.info("PostgreSQL veritabanı başlatıldı. 🗄️")
 
     def init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS analyses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT,
-                    timestamp TEXT,
-                    indicators TEXT,
-                    analysis_text TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id INTEGER,
-                    user_message TEXT,
-                    bot_response TEXT,
-                    timestamp TEXT,
-                    symbol TEXT
-                )
-            """)
-            conn.commit()
-            logger.info("Veritabanı başlatıldı. 🗄️")
+        """PostgreSQL tablolarını oluştur."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS analyses (
+                        id SERIAL PRIMARY KEY,
+                        symbol TEXT,
+                        timestamp TEXT,
+                        indicators TEXT,
+                        analysis_text TEXT
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT,
+                        user_message TEXT,
+                        bot_response TEXT,
+                        timestamp TEXT,
+                        symbol TEXT
+                    )
+                """)
+                self.conn.commit()
+                logger.info("PostgreSQL tabloları oluşturuldu. ✅")
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL tablo oluşturma hatası: {e} 😞")
+            self.conn.rollback()
 
     def save_analysis(self, symbol, data):
+        """Analizleri PostgreSQL’e kaydet."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
+            with self.conn.cursor() as cur:
+                cur.execute("""
                     INSERT INTO analyses (symbol, timestamp, indicators, analysis_text)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                 """, (
                     symbol,
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     json.dumps(data['indicators']),
                     data['deepseek_analysis']['analysis_text']
                 ))
-                conn.commit()
+                self.conn.commit()
                 logger.info(f"{symbol} için analiz kaydedildi. 💾")
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error while saving analysis for {symbol}: {e} 😞")
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL analiz kaydetme hatası: {e} 😞")
+            self.conn.rollback()
 
     def save_conversation(self, chat_id, user_message, bot_response, symbol=None):
+        """Konuşmaları PostgreSQL’e kaydet."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
+            with self.conn.cursor() as cur:
+                cur.execute("""
                     INSERT INTO conversations (chat_id, user_message, bot_response, timestamp, symbol)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                 """, (
                     chat_id,
                     user_message,
@@ -447,97 +461,109 @@ class Storage:
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     symbol
                 ))
-                cursor.execute("""
+                # Son 100 konuşmayı sakla
+                cur.execute("""
                     DELETE FROM conversations
                     WHERE id NOT IN (
                         SELECT id FROM conversations
-                        WHERE chat_id = ?
+                        WHERE chat_id = %s
                         ORDER BY timestamp DESC
                         LIMIT 100
-                    ) AND chat_id = ?
+                    ) AND chat_id = %s
                 """, (chat_id, chat_id))
-                conn.commit()
+                self.conn.commit()
                 logger.info(f"Konuşma kaydedildi (chat_id: {chat_id}). 💬")
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error while saving conversation for chat_id {chat_id}: {e} 😞")
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL konuşma kaydetme hatası: {e} 😞")
+            self.conn.rollback()
 
     def get_previous_analysis(self, symbol):
+        """Önceki analizi getir."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT * FROM analyses WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    SELECT * FROM analyses WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1
                 """, (symbol,))
-                result = cursor.fetchone()
+                result = cur.fetchone()
                 if result:
-                    columns = [desc[0] for desc in cursor.description]
+                    columns = [desc[0] for desc in cur.description]
                     logger.info(f"{symbol} için önceki analiz bulundu. 📜")
                     return dict(zip(columns, result))
                 logger.warning(f"{symbol} için önceki analiz bulunamadı. 😕")
                 return None
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error while fetching analysis for {symbol}: {e} 😞")
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL analiz alma hatası: {e} 😞")
             return None
 
     def get_latest_analysis(self, symbol):
+        """Son analizi getir."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT analysis_text FROM analyses WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    SELECT analysis_text FROM analyses WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1
                 """, (symbol,))
-                result = cursor.fetchone()
+                result = cur.fetchone()
                 logger.info(f"{symbol} için son analiz alındı. 📜")
                 return result[0] if result else None
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error while fetching latest analysis for {symbol}: {e} 😞")
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL son analiz alma hatası: {e} 😞")
             return None
 
     def get_conversation_history(self, chat_id, limit=100):
+        """Konuşma geçmişini getir."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
+            with self.conn.cursor() as cur:
+                cur.execute("""
                     SELECT user_message, bot_response, timestamp, symbol 
                     FROM conversations 
-                    WHERE chat_id = ? 
+                    WHERE chat_id = %s 
                     ORDER BY timestamp DESC 
-                    LIMIT ?
+                    LIMIT %s
                 """, (chat_id, limit))
-                results = cursor.fetchall()
+                results = cur.fetchall()
                 logger.info(f"Konuşma geçmişi alındı (chat_id: {chat_id}). 💬")
                 return [{'user_message': row[0], 'bot_response': row[1], 'timestamp': row[2], 'symbol': row[3]} for row in results]
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error while fetching conversation history for chat_id {chat_id}: {e} 😞")
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL konuşma geçmişi alma hatası: {e} 😞")
             return []
 
     def get_last_symbol(self, chat_id):
+        """Son kullanılan sembolü getir."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
+            with self.conn.cursor() as cur:
+                cur.execute("""
                     SELECT symbol FROM conversations 
-                    WHERE chat_id = ? AND symbol IS NOT NULL 
+                    WHERE chat_id = %s AND symbol IS NOT NULL 
                     ORDER BY timestamp DESC 
                     LIMIT 1
                 """, (chat_id,))
-                result = cursor.fetchone()
+                result = cur.fetchone()
                 logger.info(f"Son sembol alındı (chat_id: {chat_id}): {result[0] if result else None}")
                 return result[0] if result else None
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error while fetching last symbol for chat_id {chat_id}: {e} 😞")
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL son sembol alma hatası: {e} 😞")
             return None
 
     def clean_old_data(self, days=7):
+        """Eski verileri temizle."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
+            with self.conn.cursor() as cur:
                 cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-                cursor.execute("DELETE FROM analyses WHERE timestamp < ?", (cutoff,))
-                conn.commit()
+                cur.execute("DELETE FROM analyses WHERE timestamp < %s", (cutoff,))
+                self.conn.commit()
                 logger.info("Eski analiz verileri temizlendi. 🧹")
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error while cleaning old data: {e} 😞")
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL veri temizleme hatası: {e} 😞")
+            self.conn.rollback()
+
+    def __del__(self):
+        """Bağlantıyı kapat."""
+        try:
+            if self.conn and not self.conn.closed:
+                self.conn.close()
+                logger.info("PostgreSQL bağlantısı kapatıldı. 🛑")
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL bağlantı kapatma hatası: {e} 😞")
 
 def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
     indicators = {}
@@ -983,7 +1009,7 @@ class TelegramBot:
 
         # Bölümleri sırayla gönder
         for i, section in enumerate(sections, 1):
-            part_message = f"**{symbol} Analiz - Bölüm {i}/{len(sections)}** ⏰\n{section}"
+            part_message = f"{symbol} Analiz - Bölüm {i}/{len(sections)} ⏰\n{section}"
             await self.app.bot.send_message(chat_id=chat_id, text=part_message)
             self.storage.save_conversation(chat_id, symbol, part_message, symbol)
             await asyncio.sleep(0.5)  # Telegram rate limit için kısa bekleme
