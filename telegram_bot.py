@@ -1570,16 +1570,16 @@ class TelegramBot:
                 InlineKeyboardButton("Tartışmayı Durdur", callback_data="stop_discussion"),
             ],
         ]
-        response = (
+            response = (
             "Kanka, hadi bakalım! Coin analizi mi yapalım, yoksa başka muhabbet mi çevirelim? 😎\n"
             "Örnek: 'ADA analiz', 'nasılsın', 'geçmiş', 'falanca ne dedi?', 'ona ne cevap verirdin?', 'grokla istişare yap BTC'.\n"
             "Veritabanı temizleme için: /clear_7days, /clear_3days, /clear_all (sadece sen kullanabilirsin!).\n"
             "Tartışmayı başlat/durdur için butonları kullan! 🚀"
         )
-        await update.message.reply_text(
+            await update.message.reply_text(
             response, reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        self.storage.save_conversation(
+            self.storage.save_conversation(
             update.effective_chat.id, update.message.text, response
         )
 
