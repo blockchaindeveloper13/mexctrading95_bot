@@ -1588,13 +1588,6 @@ class TelegramBot:
         )
         logger.info("Konuşma kaydedildi")
 
-            await update.message.reply_text(
-            response, reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-            self.storage.save_conversation(
-            update.effective_chat.id, update.message.text, response
-        )
-
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Inline butonlara tıklama işlemlerini yönetir."""
         query = update.callback_query
