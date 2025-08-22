@@ -1555,8 +1555,7 @@ class TelegramBot:
         self.max_discussion_messages = 10  # Tartışma için maksimum mesaj sayısı
 
         async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Bot başlatıldığında çalışır ve inline butonlarla coin seçimi sunar."""
-        keyboard = [
+            keyboard = [
             [
                 InlineKeyboardButton("BTCUSDT", callback_data="analyze_BTCUSDT"),
                 InlineKeyboardButton("ETHUSDT", callback_data="analyze_ETHUSDT"),
