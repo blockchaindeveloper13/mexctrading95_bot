@@ -1534,25 +1534,38 @@ def calculate_indicators(kline_data, order_book, btc_data, eth_data, symbol):
 
 class TelegramBot:
     def __init__(self):
+        logger.info("TelegramBot başlatılıyor...")
         self.group_id = int(os.getenv("TELEGRAM_GROUP_ID", "-1002869335730"))
         self.storage = Storage()
+        logger.info("Storage başlatıldı")
         self.kucoin = KuCoinClient()
+        logger.info("KuCoinClient başlatıldı")
         self.deepseek = DeepSeekClient(self.storage)
+        logger.info("DeepSeekClient başlatıldı")
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        logger.info(f"Bot token: {bot_token[:4]}...")
         self.app = Application.builder().token(bot_token).build()
+        logger.info("Application başlatıldı")
         self.app.add_handler(CommandHandler("start", self.start))
+        logger.info("start handler eklendi")
         self.app.add_handler(CommandHandler("clear_7days", self.clear_7days))
+        logger.info("clear_7days handler eklendi")
         self.app.add_handler(CommandHandler("clear_3days", self.clear_3days))
+        logger.info("clear_3days handler eklendi")
         self.app.add_handler(CommandHandler("clear_all", self.clear_all))
+        logger.info("clear_all handler eklendi")
         self.app.add_handler(CallbackQueryHandler(self.button))
+        logger.info("CallbackQueryHandler eklendi")
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message)
         )
+        logger.info("MessageHandler eklendi")
         self.active_analyses = {}
         self.shutdown_event = asyncio.Event()
         self.is_running = False
         self.analysis_lock = asyncio.Lock()
-        self.max_discussion_messages = 10  # Tartışma için maksimum mesaj sayısı
+        self.max_discussion_messages = 10
+        logger.info("TelegramBot başlatıldı")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Bot başlatıldığında çalışır ve inline butonlarla coin seçimi sunar."""
@@ -1587,6 +1600,39 @@ class TelegramBot:
             update.effective_chat.id, update.message.text, response
         )
         logger.info("Konuşma kaydedildi")
+
+    async def clear_7days(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """7 günden eski verileri temizler."""
+        logger.info("clear_7days komutu çağrıldı, user_id: %s", update.effective_user.id)
+        user_id = update.effective_user.id
+        response = await self.storage.clear_7days(user_id)
+        await update.message.reply_text(response)
+        self.storage.save_conversation(
+            update.effective_chat.id, update.message.text, response
+        )
+        logger.info("clear_7days işlemi tamamlandı, user_id: %s", update.effective_user.id)
+
+    async def clear_3days(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """3 günden eski verileri temizler."""
+        logger.info("clear_3days komutu çağrıldı, user_id: %s", update.effective_user.id)
+        user_id = update.effective_user.id
+        response = await self.storage.clear_3days(user_id)
+        await update.message.reply_text(response)
+        self.storage.save_conversation(
+            update.effective_chat.id, update.message.text, response
+        )
+        logger.info("clear_3days işlemi tamamlandı, user_id: %s", update.effective_user.id)
+
+    async def clear_all(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Tüm veritabanını sıfırlar."""
+        logger.info("clear_all komutu çağrıldı, user_id: %s", update.effective_user.id)
+        user_id = update.effective_user.id
+        response = await self.storage.clear_all(user_id)
+        await update.message.reply_text(response)
+        self.storage.save_conversation(
+            update.effective_chat.id, update.message.text, response
+        )
+        logger.info("clear_all işlemi tamamlandı, user_id: %s", update.effective_user.id)
 
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Inline butonlara tıklama işlemlerini yönetir."""
