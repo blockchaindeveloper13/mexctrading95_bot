@@ -1554,8 +1554,10 @@ class TelegramBot:
         self.analysis_lock = asyncio.Lock()
         self.max_discussion_messages = 10  # Tartışma için maksimum mesaj sayısı
 
-        async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-            keyboard = [
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Bot başlatıldığında çalışır ve inline butonlarla coin seçimi sunar."""
+        logger.info("start fonksiyonu çağrıldı")
+        keyboard = [
             [
                 InlineKeyboardButton("BTCUSDT", callback_data="analyze_BTCUSDT"),
                 InlineKeyboardButton("ETHUSDT", callback_data="analyze_ETHUSDT"),
@@ -1570,12 +1572,22 @@ class TelegramBot:
                 InlineKeyboardButton("Tartışmayı Durdur", callback_data="stop_discussion"),
             ],
         ]
-            response = (
+        response = (
             "Kanka, hadi bakalım! Coin analizi mi yapalım, yoksa başka muhabbet mi çevirelim? 😎\n"
             "Örnek: 'ADA analiz', 'nasılsın', 'geçmiş', 'falanca ne dedi?', 'ona ne cevap verirdin?', 'grokla istişare yap BTC'.\n"
             "Veritabanı temizleme için: /clear_7days, /clear_3days, /clear_all (sadece sen kullanabilirsin!).\n"
             "Tartışmayı başlat/durdur için butonları kullan! 🚀"
         )
+        logger.info("Mesaj gönderiliyor")
+        await update.message.reply_text(
+            response, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        logger.info("Mesaj gönderildi, konuşma kaydediliyor")
+        self.storage.save_conversation(
+            update.effective_chat.id, update.message.text, response
+        )
+        logger.info("Konuşma kaydedildi")
+
             await update.message.reply_text(
             response, reply_markup=InlineKeyboardMarkup(keyboard)
         )
