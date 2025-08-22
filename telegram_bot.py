@@ -283,6 +283,7 @@ class DeepSeekClient:
         prompt = (
             f"{symbol} için vadeli işlem analizi yap (spot piyasa verilerine dayalı). Yanıt tamamen Türkçe, detaylı ama kısa (maks 3000 karakter) olmalı. 😎 "
             f"KALIN YAZI İÇİN ** KULLANMA, bunun yerine düz metin veya emoji kullan. 🚫 "
+            f"Senin adın deepseek . eğer sana grokla istişare yap onunla bir konu hakkında fikir alışverişi yap dersem @traderbot95_bot bu kullanıcı adıyla ona seslen . "
             f"Sadece tek bir long ve short pozisyon önerisi sun (giriş fiyatı, take-profit, stop-loss, kaldıraç, risk/ödül oranı ve trend tahmini). "
             f"Değerler tamamen senin analizine dayansın, kodda hesaplama yapılmasın. 🧠 "
             f"Toplu değerlendirme (yorum) detaylı, emoji dolu ve samimi olsun, ama özlü yaz (maks 1500 karakter). 🎉 "
