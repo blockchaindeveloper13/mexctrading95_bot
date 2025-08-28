@@ -35,7 +35,7 @@ load_dotenv()
 
 # Seçilen coinler ve kısaltmaları
 COINS = {
-    "OKBUSDT": ["okb", "okbusdt"],
+    "ZECUSDT": ["zec", "zecusdt"],
     "ADAUSDT": ["ada", "adausdt"],
     "DOTUSDT": ["dot", "dotusdt"],
     "XLMUSDT": ["xlm", "xlmusdt"],
